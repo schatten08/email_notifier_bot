@@ -4,6 +4,7 @@ import logging
 import re
 import datetime
 import requests
+import json
 from dotenv import load_dotenv
 from O365 import Account
 import asyncio
@@ -25,6 +26,57 @@ logger = logging.getLogger(__name__)
 start_time = datetime.datetime.now()
 emails_checked = 0
 tickets_sent = 0
+REPORT_FILE = "weekly_report.json"
+
+def load_report():
+    if os.path.exists(REPORT_FILE):
+        with open(REPORT_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {"npr": [], "er": []}
+
+def save_report(data):
+    with open(REPORT_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def extract_report_data(subject):
+    # Ищем NPR (Новые сотрудники)
+    if "NPR" in subject and "Prepare workstation" in subject:
+        match = re.search(r'NPR\s*\([^)]+\)\s*\(([^)]+)\)', subject)
+        if match:
+            data = load_report()
+            name = match.group(1).strip()
+            if name not in data["npr"]:
+                data["npr"].append(name)
+                save_report(data)
+                logger.info(f"Добавлен новый сотрудник в отчет: {name}")
+
+    # Ищем ER (Уволенные сотрудники)
+    elif "ER" in subject and ("Dismount" in subject or "Exit" in subject):
+        match = re.search(r'ER\s*\([^)]+\)\s*\(([^)]+)\)', subject)
+        if match:
+            data = load_report()
+            name = match.group(1).strip()
+            if name not in data["er"]:
+                data["er"].append(name)
+                save_report(data)
+                logger.info(f"Добавлен уволенный сотрудник в отчет: {name}")
+
+def send_weekly_report():
+    data = load_report()
+    npr_list = "\n".join([f"- {name}" for name in data['npr']]) or "- Нет новых сотрудников"
+    er_list = "\n".join([f"- {name}" for name in data['er']]) or "- Нет уволенных сотрудников"
+    
+    report_msg = (
+        "📊 **Еженедельный отчет по сотрудникам**\n\n"
+        "**🟢 Приняты за неделю (NPR):**\n"
+        f"{npr_list}\n\n"
+        "**🔴 Уволены за неделю (ER):**\n"
+        f"{er_list}"
+    )
+    send_teams_notification(report_msg)
+    # Очищаем отчет после отправки
+    save_report({"npr": [], "er": []})
+    logger.info("Еженедельный отчет отправлен и очищен.")
 
 def send_teams_notification(text, is_critical=False):
     global tickets_sent
@@ -196,12 +248,20 @@ def main():
     # Хранилище ID отправленных тикетов/алертов, чтобы не слать дубли (INC, RITM и т.д.)
     notified_tickets = set()
     is_first_run = True
+    last_report_date = None
     
     # При первом запуске помечаем текущие письма как прочитанные для бота
     logger.info("Бот запущен. Проверяю почту для Teams...")
     
     while True:
         try:
+            now = datetime.datetime.now()
+            # Проверяем, наступила ли пятница (4 - это пятница) и время после 15:00
+            if now.weekday() == 4 and now.hour >= 15:
+                if last_report_date != now.date():
+                    send_weekly_report()
+                    last_report_date = now.date()
+
             # Получаем последние 5 писем из папки 'Inbox'
             messages = mailbox.get_messages(limit=5, download_attachments=False)
             
@@ -247,6 +307,9 @@ def main():
                                     processed_emails.add(message.object_id)
                                     continue
                                 notified_tickets.add(t_id)
+
+                            # Проверяем, не является ли это NPR/ER запросом для еженедельного отчета
+                            extract_report_data(subject)
 
                             logger.info(f"Распарсен тикет из письма: {subject}")
                         else:
