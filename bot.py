@@ -107,6 +107,11 @@ def parse_ticket(subject, body):
     if "has been closed" in subject.lower() or "has been resolved" in subject.lower():
         return 'IGNORE'
         
+    # Если это SLA уведомление, помечаем его как критическое
+    is_sla_alert = False
+    if "has reached" in subject.lower() and "sla" in subject.lower():
+        is_sla_alert = True
+        
     # 3. Ищем номер тикета (INC, RITM или SCTASK)
     ticket_match = re.search(r'(INC\d+|RITM\d+|SCTASK\d+)', subject)
     if not ticket_match:
@@ -150,6 +155,9 @@ def parse_ticket(subject, body):
         ticket_type = "🟡 Задача каталога (SCTASK)"
     else:
         ticket_type = "📝 Тикет"
+        
+    if is_sla_alert:
+        ticket_type = "⏰ ВНИМАНИЕ: Нарушение SLA для"
     
     # Формируем итоговое сообщение
     # Teams поддерживает синтаксис маркдауна: [текст](ссылка)
@@ -161,6 +169,9 @@ def parse_ticket(subject, body):
     msg += f"**Тема:** {title}\n"
     
     is_critical = False
+    if is_sla_alert:
+        is_critical = True
+        
     if priority:
         msg += f"**Приоритет:** {priority}\n"
         if "1" in priority or "critical" in priority.lower():
