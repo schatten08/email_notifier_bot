@@ -47,85 +47,83 @@ def save_report(data):
     with open(REPORT_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
+import re, os, json
+from datetime import datetime, timezone
+
+import re, os, json
+from datetime import datetime, timezone
+
 def extract_report_data(full_text, subject):
-    # Берем в стату только те тикеты, которые были реально закрыты/решены на этой неделе, 
-    # либо это письма от People портала (Exit Request)
-    is_terminating = "closed" in subject.lower() or "resolved" in subject.lower() or "exit task" in subject.lower() or "requires approval" in subject.lower()
-    if not is_terminating:
-        return
-
-    is_npr = "NPR" in full_text and "Prepare workstation" in full_text
-    is_er = "ER" in full_text and ("Dismount" in full_text or "Exit" in full_text)
-    is_trans = "Transformation from Trainee" in full_text
+    # 1. Skip SCTASK (duplicates)
+    if 'SCTASK' in subject: return
     
-    if not (is_npr or is_er or is_trans):
-        return
-
-    # Игнорируем студентов
-    if re.search(r'Employee\s+title[^\w]*Student', full_text, re.IGNORECASE):
-        import logging
-        logging.getLogger('bot_logger').info("Пропущена заявка для Student.")
-        return
-
-    name = ""
+    # 2. Final state only
+    is_final = any(kw in subject.lower() for kw in ['resolved', 'exit task', 'closed'])
+    # Also allow People Portal / Exit Requests which might not have 'resolved' in subject but are terminal
+    if not is_final and not ('Exit Request' in full_text or 'Transformation' in full_text): return
+    
+    # 3. Skip Students
+    if re.search(r'(Title|Employee title):.*Student', full_text, re.IGNORECASE): return
+    
+    # 4. Identify types
+    is_npr = 'NPR' in full_text and 'Prepare workstation' in full_text
+    is_er = 'ER' in full_text and ('Dismount' in full_text or 'Exit' in full_text)
+    is_trans = 'Transformation from Trainee' in full_text
+    
+    if not (is_npr or is_er or is_trans): return
+    
+    # 5. Extract Name
+    name = None
     if is_trans:
-        match_trans = re.search(r'Trainee:\s*(.*?),\s*effective', full_text, re.IGNORECASE)
-        if match_trans:
-            name = match_trans.group(1).strip()
+        m = re.search(r'Trainee:\s*(.*?)(?:,| effective)', full_text, re.IGNORECASE)
+        if m: name = m.group(1).strip()
     else:
-        # Для стандартных NPR/ER
-        match = re.search(r'(?:NPR|ER)\s*\([^)]+\)\s*\(([^)]+)\)', full_text)
-        # fallback, в Бишкеке иногда нет скобок
-        if not match:
-            # ER 12345 Name Surname
-            match = re.search(r'(?:NPR|ER)[^A-Za-z]+([A-Z][a-z]+\s+[A-Z][a-z]+)', full_text)
-            
-        if match:
-            name = match.group(1).strip()
-            
-    if not name:
-        return
+        # Priority 1: Title field
+        m = re.search(r'Title:\s*([A-Z][a-z]+ [A-Z][a-z]+)', full_text)
+        if not m:
+            # Priority 2: Request subject pattern
+            m = re.search(r'(?:NPR|ER)\s*\([^)]+\)\s*\(([^)]+)\)', full_text)
+        if m: name = m.group(1).strip()
+        
+    if not name: return
     
-    # Пытаемся вытащить локацию непосредственно из текста
-    loc_match = re.search(r'Location:\s*(.*?)(?:Description|Title|Service|Request Details|Comments|$)', full_text, re.IGNORECASE)
-    location_str = loc_match.group(1) if loc_match else ""
-    location_str_lower = location_str.lower()
-    
-    # Определяем город по ключевым словам или вытаскиваем вручную
+    # 6. Resolve City (Strict)
     city = None
-    if "almaty" in location_str_lower or "алматы" in location_str_lower:
-        city = "Алматы"
-    elif "astana" in location_str_lower or "астана" in location_str_lower:
-        city = "Астана"
-    elif "bishkek" in location_str_lower or "бишкек" in location_str_lower:
-        city = "Бишкек"
-    elif "karaganda" in location_str_lower or "караганда" in location_str_lower:
-        city = "Караганда"
-    elif "tashkent" in location_str_lower or "ташкент" in location_str_lower:
-        city = "Ташкент"
-
-    if not city:
-        return
-
-    data = load_report()
+    m_loc = re.search(r'Location:\s*(.*?)(?:\n|Description|Service|Priority|Title|$)', full_text, re.IGNORECASE)
+    loc_val = m_loc.group(1).lower() if m_loc else ''
     
-    if city not in data:
-        data[city] = {"npr": [], "er": []}
-
-    # Если мы нашли Трансформацию, мы относим это к NPR
-    if is_trans:
-        is_npr = True
-
-    if is_npr:
-        if name not in data[city]["npr"]:
-            data[city]["npr"].append(name)
-            save_report(data)
-            logger.info(f"Добавлен NPR (или Трансформация) в отчет ({city}): {name}")
-    elif is_er:
-        if name not in data[city]["er"]:
-            data[city]["er"].append(name)
-            save_report(data)
-            logger.info(f"Добавлен ER в отчет ({city}): {name}")
+    if 'almaty' in loc_val or '??????' in loc_val: city = '??????'
+    elif 'astana' in l_val or '??????' in loc_val: city = '??????'
+    elif 'bishkek' in loc_val or '??????' in loc_val: city = '??????'
+    elif 'karaganda' in loc_val or '?????????' in loc_val: city = '?????????'
+    elif 'tashkent' in loc_val or '???????' in loc_val: city = '???????'
+    
+    if not city:
+        # Fallback to body scan
+        t = full_text.lower()
+        if 'almaty' in t: city = '??????'
+        elif 'astana' in t: city = '??????'
+        elif 'bishkek' in t: city = '??????'
+        elif 'karaganda' in t: city = '?????????'
+        elif 'tashkent' in t: city = '???????'
+        
+    if not city: return
+    
+    # 7. Add to unique report
+    d = {}
+    if os.path.exists('weekly_report.json'):
+        try:
+            with open('weekly_report.json','r',encoding='utf-8') as fj: d = json.load(fj)
+        except: d = {}
+        
+    if name not in d:
+        d[name] = {
+            'city': city,
+            'type': 'NPR' if (is_npr or is_trans) else 'ER',
+            'date': datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        }
+        with open('weekly_report.json','w',encoding='utf-8') as fj:
+            json.dump(d, fj, ensure_ascii=False, indent=4)
 
 def send_weekly_report():
     data = load_report()
