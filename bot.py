@@ -3,9 +3,9 @@ import time
 import logging
 import re
 import datetime
+import requests
 from dotenv import load_dotenv
 from O365 import Account
-from telegram import Bot
 import asyncio
 
 # Загружаем настройки
@@ -14,8 +14,7 @@ load_dotenv()
 CLIENT_ID = os.getenv('CLIENT_ID')
 CLIENT_SECRET = os.getenv('CLIENT_SECRET')
 TENANT_ID = os.getenv('TENANT_ID')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+TEAMS_WEBHOOK_URL = os.getenv('TEAMS_WEBHOOK_URL')
 TARGET_EMAIL = os.getenv('TARGET_EMAIL')
 
 # Настройка логирования
@@ -27,55 +26,29 @@ start_time = datetime.datetime.now()
 emails_checked = 0
 tickets_sent = 0
 
-async def send_telegram_notification(text, is_critical=False):
+def send_teams_notification(text, is_critical=False):
     global tickets_sent
-    if not TELEGRAM_CHAT_ID:
-        logger.error("TELEGRAM_CHAT_ID не настроен!")
+    if not TEAMS_WEBHOOK_URL:
+        logger.error("TEAMS_WEBHOOK_URL не настроен!")
         return
-        
-    bot = Bot(token=TELEGRAM_TOKEN)
     
-    # Проверяем текущее время (тихий режим с 22:00 до 08:00)
-    current_hour = datetime.datetime.now().hour
-    is_quiet_hours = current_hour >= 22 or current_hour < 8
+    # Цвет полоски слева от сообщения в Teams (Красный для критических, Синий для остальных)
+    color = "E81123" if is_critical else "0078D7"
     
-    # Отключаем звук, если сейчас тихие часы И тикет не критический
-    disable_notification = is_quiet_hours and not is_critical
+    # Формируем простую карточку (MessageCard)
+    payload = {
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "themeColor": color,
+        "text": text
+    }
     
     try:
-        await bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID, 
-            text=text, 
-            parse_mode='HTML',
-            disable_notification=disable_notification
-        )
+        response = requests.post(TEAMS_WEBHOOK_URL, json=payload)
+        response.raise_for_status()
         tickets_sent += 1
     except Exception as e:
-        logger.error(f"Ошибка отправки в TG: {e}")
-
-async def handle_status_command(bot, offset):
-    updates = await bot.get_updates(offset=offset, timeout=1)
-    new_offset = offset
-    
-    for update in updates:
-        new_offset = update.update_id + 1
-        if update.message and update.message.text == "/status":
-            uptime = datetime.datetime.now() - start_time
-            days = uptime.days
-            hours, remainder = divmod(uptime.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-            
-            uptime_str = f"{days} дн. {hours} ч. {minutes} мин." if days > 0 else f"{hours} ч. {minutes} мин."
-            
-            status_msg = (
-                "🟢 <b>Бот работает</b>\n\n"
-                f"⏱ <b>Аптайм:</b> {uptime_str}\n"
-                f"📧 <b>Проверено писем:</b> {emails_checked}\n"
-                f"🚀 <b>Отправлено тикетов:</b> {tickets_sent}"
-            )
-            await bot.send_message(chat_id=update.message.chat_id, text=status_msg, parse_mode='HTML')
-            
-    return new_offset
+        logger.error(f"Ошибка отправки в Teams: {e}\n{response.text if 'response' in locals() else ''}")
 
 def authenticate_outlook():
     credentials = (CLIENT_ID, CLIENT_SECRET)
@@ -114,11 +87,11 @@ def parse_ticket(subject, body):
         # Выбираем эмодзи по статусу
         status_icon = "🔴" if "down" in status_val.lower() else ("🟢" if "up" in status_val.lower() else "⚠️")
         
-        msg_sw = f"{status_icon} <b>Мониторинг SolarWinds</b>\n\n"
-        msg_sw += f"<b>Оборудование:</b> {alert_val}\n"
-        msg_sw += f"<b>Локация:</b> {loc_val}\n"
-        msg_sw += f"<b>IP:</b> {ip_val}\n"
-        msg_sw += f"<b>Статус:</b> {status_val}"
+        msg_sw = f"{status_icon} **Мониторинг SolarWinds**\n\n"
+        msg_sw += f"**Оборудование:** {alert_val}\n"
+        msg_sw += f"**Локация:** {loc_val}\n"
+        msg_sw += f"**IP:** {ip_val}\n"
+        msg_sw += f"**Статус:** {status_val}"
         
         # Алерты о падении оборудования считаем критичными
         is_critical = True if "down" in status_val.lower() else False
@@ -179,49 +152,45 @@ def parse_ticket(subject, body):
         ticket_type = "📝 Тикет"
     
     # Формируем итоговое сообщение
+    # Teams поддерживает синтаксис маркдауна: [текст](ссылка)
     if ticket_url:
-        msg = f"{ticket_type}: <a href='{ticket_url}'><b>{ticket_id}</b></a>\n\n"
+        msg = f"{ticket_type}: [{ticket_id}]({ticket_url})\n\n"
     else:
-        msg = f"{ticket_type}: <b>{ticket_id}</b>\n\n"
+        msg = f"{ticket_type}: **{ticket_id}**\n\n"
         
-    msg += f"<b>Тема:</b> {title}\n"
+    msg += f"**Тема:** {title}\n"
     
     is_critical = False
     if priority:
-        msg += f"<b>Приоритет:</b> {priority}\n"
+        msg += f"**Приоритет:** {priority}\n"
         if "1" in priority or "critical" in priority.lower():
             is_critical = True
             
     if location:
-        msg += f"<b>Локация:</b> {location}\n"
+        msg += f"**Локация:** {location}\n"
     if desc:
         # Укорачиваем длинное описание
         short_desc = desc[:250] + "..." if len(desc) > 250 else desc
-        msg += f"\n<b>Описание:</b>\n<i>{short_desc}</i>"
+        msg += f"\n**Описание:**\n*{short_desc}*"
         
     return msg, is_critical
 
-async def main():
+def main():
     global emails_checked
     account = authenticate_outlook()
     mailbox = account.mailbox()
-    bot = Bot(token=TELEGRAM_TOKEN)
     
     # Хранилище ID обработанных писем, чтобы не слать дубликаты
     processed_emails = set()
     # Хранилище ID отправленных тикетов/алертов, чтобы не слать дубли (INC, RITM и т.д.)
     notified_tickets = set()
     is_first_run = True
-    tg_update_offset = None
     
     # При первом запуске помечаем текущие письма как прочитанные для бота
-    logger.info("Бот запущен. Проверяю почту...")
+    logger.info("Бот запущен. Проверяю почту для Teams...")
     
     while True:
         try:
-            # Обработка команд из Телеграма (например, /status)
-            tg_update_offset = await handle_status_command(bot, tg_update_offset)
-            
             # Получаем последние 5 писем из папки 'Inbox'
             messages = mailbox.get_messages(limit=5, download_attachments=False)
             
@@ -273,14 +242,14 @@ async def main():
                             # Обычное письмо (не тикет EPAM поддерки), отправляем как раньше
                             body_preview = message.body_preview[:100] + "..."
                             notification = (
-                                f"📩 <b>Новое письмо!</b>\n\n"
-                                f"<b>От:</b> {sender}\n"
-                                f"<b>Тема:</b> {subject}\n"
-                                f"<b>Текст:</b> {body_preview}\n"
+                                f"📩 **Новое письмо!**\n\n"
+                                f"**От:** {sender}\n"
+                                f"**Тема:** {subject}\n"
+                                f"**Текст:** {body_preview}\n"
                             )
                             logger.info(f"Найдено обычное письмо: {subject}")
                             
-                        await send_telegram_notification(notification, is_critical=is_critical_ticket)
+                        send_teams_notification(notification, is_critical=is_critical_ticket)
                     
                     processed_emails.add(message.object_id)
             
@@ -299,24 +268,7 @@ async def main():
             # В случае ошибки авторизации может потребоваться переподключение
             
         # Ждем 60 секунд перед следующей проверкой
-        await asyncio.sleep(60)
+        time.sleep(60)
 
 if __name__ == "__main__":
-    if not TELEGRAM_CHAT_ID:
-        print("\n!!! ВНИМАНИЕ !!!")
-        print("Вы не указали TELEGRAM_CHAT_ID в файле .env")
-        print("Напишите боту что-нибудь в Telegram, и я попробую найти ваш ID.")
-        
-        async def get_chat_id():
-            bot = Bot(token=TELEGRAM_TOKEN)
-            updates = await bot.get_updates()
-            if updates:
-                chat_id = updates[-1].message.chat_id
-                print(f"\nВаш Chat ID: {chat_id}")
-                print("Скопируйте его в файл .env в поле TELEGRAM_CHAT_ID\n")
-            else:
-                print("Обновлений нет. Сначала напишите сообщение боту!")
-        
-        asyncio.run(get_chat_id())
-    else:
-        asyncio.run(main())
+    main()
