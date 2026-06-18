@@ -31,51 +31,94 @@ REPORT_FILE = "weekly_report.json"
 def load_report():
     if os.path.exists(REPORT_FILE):
         with open(REPORT_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {"npr": [], "er": []}
+            try:
+                data = json.load(f)
+                # Проверка на то, старый ли это формат
+                if "npr" in data and isinstance(data["npr"], list):
+                    return {}
+                return data
+            except:
+                return {}
+    return {}
 
 def save_report(data):
     with open(REPORT_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-def extract_report_data(subject):
-    # Ищем NPR (Новые сотрудники)
-    if "NPR" in subject and "Prepare workstation" in subject:
-        match = re.search(r'NPR\s*\([^)]+\)\s*\(([^)]+)\)', subject)
-        if match:
-            data = load_report()
-            name = match.group(1).strip()
-            if name not in data["npr"]:
-                data["npr"].append(name)
-                save_report(data)
-                logger.info(f"Добавлен новый сотрудник в отчет: {name}")
+def extract_report_data(subject, notification_text):
+    is_npr = "NPR" in subject and "Prepare workstation" in subject
+    is_er = "ER" in subject and ("Dismount" in subject or "Exit" in subject)
+    
+    if not (is_npr or is_er):
+        return
 
-    # Ищем ER (Уволенные сотрудники)
-    elif "ER" in subject and ("Dismount" in subject or "Exit" in subject):
-        match = re.search(r'ER\s*\([^)]+\)\s*\(([^)]+)\)', subject)
-        if match:
-            data = load_report()
-            name = match.group(1).strip()
-            if name not in data["er"]:
-                data["er"].append(name)
-                save_report(data)
-                logger.info(f"Добавлен уволенный сотрудник в отчет: {name}")
+    match = re.search(r'(?:NPR|ER)\s*\([^)]+\)\s*\(([^)]+)\)', subject)
+    if not match:
+        return
+        
+    name = match.group(1).strip()
+    
+    # Пытаемся вытащить локацию из сформированного сообщения
+    loc_match = re.search(r'\*\*Локация:\*\*\s*([^\n]+)', notification_text)
+    location_str = loc_match.group(1) if loc_match else ""
+    location_str_lower = location_str.lower()
+    
+    # Определяем город по ключевым словам или вытаскиваем вручную
+    city = "Другое"
+    if "bishkek" in location_str_lower or "бишкек" in location_str_lower:
+        city = "Бишкек"
+    elif "karaganda" in location_str_lower or "караганда" in location_str_lower:
+        city = "Караганда"
+    elif "astana" in location_str_lower or "астана" in location_str_lower:
+        city = "Астана"
+    elif "almaty" in location_str_lower or "алматы" in location_str_lower:
+        city = "Алматы"
+    elif "tashkent" in location_str_lower or "ташкент" in location_str_lower:
+        city = "Ташкент"
+    elif "asia - central and west" in location_str_lower:
+        # Например: Asia - Central and West/Kazakhstan/Qaraghandy Oblysy/Karaganda/...
+        parts = location_str.split('/')
+        if len(parts) > 3:
+            city_raw = parts[3].strip()
+            # Уберем "str" и тд, если вдруг съехало
+            if "str" not in city_raw.lower():
+                city = city_raw
+
+    data = load_report()
+    
+    if city not in data:
+        data[city] = {"npr": [], "er": []}
+
+    if is_npr:
+        if name not in data[city]["npr"]:
+            data[city]["npr"].append(name)
+            save_report(data)
+            logger.info(f"Добавлен NPR в отчет ({city}): {name}")
+    elif is_er:
+        if name not in data[city]["er"]:
+            data[city]["er"].append(name)
+            save_report(data)
+            logger.info(f"Добавлен ER в отчет ({city}): {name}")
 
 def send_weekly_report():
     data = load_report()
-    npr_list = "\n".join([f"- {name}" for name in data['npr']]) or "- Нет новых сотрудников"
-    er_list = "\n".join([f"- {name}" for name in data['er']]) or "- Нет уволенных сотрудников"
     
-    report_msg = (
-        "📊 **Еженедельный отчет по сотрудникам**\n\n"
-        "**🟢 Приняты за неделю (NPR):**\n"
-        f"{npr_list}\n\n"
-        "**🔴 Уволены за неделю (ER):**\n"
-        f"{er_list}"
-    )
+    if not data:
+        report_msg = "📊 **Еженедельный отчет по сотрудникам**\n\nЗа эту неделю нет данных по NPR и ER."
+        send_teams_notification(report_msg)
+        return
+
+    lines = ["📊 **Еженедельный отчет по сотрудникам**\n"]
+    for city, counts in data.items():
+        npr_count = len(counts["npr"])
+        er_count = len(counts["er"])
+        lines.append(f"**{city}**: NPR - {npr_count}, ER - {er_count}")
+    
+    report_msg = "\n".join(lines)
     send_teams_notification(report_msg)
+    
     # Очищаем отчет после отправки
-    save_report({"npr": [], "er": []})
+    save_report({})
     logger.info("Еженедельный отчет отправлен и очищен.")
 
 def send_teams_notification(text, is_critical=False):
@@ -308,10 +351,9 @@ def main():
                                     continue
                                 notified_tickets.add(t_id)
 
-                            # Проверяем, не является ли это NPR/ER запросом для еженедельного отчета
-                            extract_report_data(subject)
-
                             logger.info(f"Распарсен тикет из письма: {subject}")
+                            # Проверяем, не является ли это NPR/ER запросом для еженедельного отчета
+                            extract_report_data(subject, notification)
                         else:
                             # Обычное письмо (не тикет EPAM поддерки), отправляем как раньше
                             body_preview = message.body_preview[:100] + "..."
