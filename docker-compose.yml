@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: email_notifier_bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./o365_token.txt:/app/o365_token.txt
+      - ./weekly_report.json:/app/weekly_report.json
+      - ./bot_log.txt:/app/bot_log.txt
