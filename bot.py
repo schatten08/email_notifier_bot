@@ -2,7 +2,7 @@ import os
 import time
 import logging
 import re
-import datetime
+from datetime import datetime, timedelta, timezone
 import requests
 import json
 import sys
@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Глобальные переменные для статистики
-start_time = datetime.datetime.now()
+start_time = datetime.now()
 emails_checked = 0
 tickets_sent = 0
 REPORT_FILE = "weekly_report.json"
@@ -47,30 +47,34 @@ def save_report(data):
     with open(REPORT_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-import re, os, json
-from datetime import datetime, timezone
-
-import re, os, json
-from datetime import datetime, timezone
-
 def extract_report_data(full_text, subject):
-    # 1. Skip SCTASK (duplicates)
-    if 'SCTASK' in subject: return
+    # 1. Skip non-relevant updates
+    # We only care about FINAL states.
+    # Notifications about ASSIGNMENT, SLA, SUSPENSION or CREATION should be ignored.
+    lower_subject = subject.lower()
+    ignore_keywords = ['assigned', 'sla', 'pending', 'suspended', 'created', 'assigned to']
+    if any(kw in lower_subject for kw in ignore_keywords):
+        return
+
+    # 2. Final state detection
+    is_final = any(kw in lower_subject for kw in ['resolved', 'closed', 'exit task', 'completed'])
     
-    # 2. Final state only
-    is_final = any(kw in subject.lower() for kw in ['resolved', 'exit task', 'closed'])
-    # Also allow People Portal / Exit Requests which might not have 'resolved' in subject but are terminal
-    if not is_final and not ('Exit Request' in full_text or 'Transformation' in full_text): return
+    # If it's not a terminal state, we skip it
+    if not is_final:
+        return
     
-    # 3. Skip Students
-    if re.search(r'(Title|Employee title):.*Student', full_text, re.IGNORECASE): return
-    
-    # 4. Identify types
+    # 3. Identify types
     is_npr = 'NPR' in full_text and 'Prepare workstation' in full_text
     is_er = 'ER' in full_text and ('Dismount' in full_text or 'Exit' in full_text)
     is_trans = 'Transformation from Trainee' in full_text
     
     if not (is_npr or is_er or is_trans): return
+    
+    # 4. Skip Students / Trainees (unless it is a Transformation)
+    # Most students/interns are marked as 'Trainee' or 'Student'
+    if not is_trans:
+        if re.search(r'(Title|Employee title|Employment type):.*(Student|Trainee)', full_text, re.IGNORECASE):
+            return
     
     # 5. Extract Name
     name = None
@@ -87,77 +91,148 @@ def extract_report_data(full_text, subject):
         
     if not name: return
     
-    # 6. Resolve City (Strict)
+    # 6. Date extraction
+    req_date = "Unknown"
+    # Try looking in specific fields or patterns
+    m_date = re.search(r'(?:effective from|Dismissal Date|Start Date|First Working Day)[:\s]*(\d{4}-\d{2}-\d{2}|\d+\s*[A-Z][a-z]+\s*\d{4})', full_text, re.IGNORECASE)
+    if m_date:
+        req_date = m_date.group(1).split(' ')[0] if '-' in m_date.group(1) else m_date.group(1)
+    else:
+        # Try to extract date from the Title field like "NPR (15 Jun 2026)"
+        m_title_date = re.search(r'(?:NPR|ER|Transformation)[^()]*\(([^)]+)\)', subject, re.IGNORECASE)
+        if not m_title_date:
+            m_title_date = re.search(r'(?:NPR|ER|Transformation)[^()]*\(([^)]+)\)', full_text, re.IGNORECASE)
+        
+        if m_title_date:
+            req_date = m_title_date.group(1)
+
+    # 7. Resolve City (Strict)
     city = None
     m_loc = re.search(r'Location:\s*(.*?)(?:\n|Description|Service|Priority|Title|$)', full_text, re.IGNORECASE)
     loc_val = m_loc.group(1).lower() if m_loc else ''
     
-    if 'almaty' in loc_val or '??????' in loc_val: city = '??????'
-    elif 'astana' in l_val or '??????' in loc_val: city = '??????'
-    elif 'bishkek' in loc_val or '??????' in loc_val: city = '??????'
-    elif 'karaganda' in loc_val or '?????????' in loc_val: city = '?????????'
-    elif 'tashkent' in loc_val or '???????' in loc_val: city = '???????'
+    if 'almaty' in loc_val or 'алматы' in loc_val: city = 'Almaty'
+    elif 'astana' in loc_val or 'астана' in loc_val: city = 'Astana'
+    elif 'bishkek' in loc_val or 'бишкек' in loc_val: city = 'Bishkek'
+    elif 'karaganda' in loc_val or 'караганда' in loc_val: city = 'Karaganda'
+    elif 'tashkent' in loc_val or 'ташкент' in loc_val: city = 'Tashkent'
     
     if not city:
         # Fallback to body scan
         t = full_text.lower()
-        if 'almaty' in t: city = '??????'
-        elif 'astana' in t: city = '??????'
-        elif 'bishkek' in t: city = '??????'
-        elif 'karaganda' in t: city = '?????????'
-        elif 'tashkent' in t: city = '???????'
+        if 'almaty' in t or 'алматы' in t: city = 'Almaty'
+        elif 'astana' in t or 'астана' in t: city = 'Astana'
+        elif 'bishkek' in t or 'бишкек' in t: city = 'Bishkek'
+        elif 'karaganda' in t or 'караганда' in t: city = 'Karaganda'
+        elif 'tashkent' in t or 'ташкент' in t: city = 'Tashkent'
         
     if not city: return
     
-    # 7. Add to unique report
-    d = {}
-    if os.path.exists('weekly_report.json'):
-        try:
-            with open('weekly_report.json','r',encoding='utf-8') as fj: d = json.load(fj)
-        except: d = {}
-        
+    # 8. Link extraction
+    # Prefer ServiceNow (SN) links for the report
+    link = "#"
+    ticket_id_in_report = "ServiceNow"
+    
+    # Try to find RITM or SCTASK in the link/text to make a better label
+    id_match = re.search(r'(RITM\d+|SCTASK\d+)', full_text)
+    if id_match:
+        ticket_id_in_report = id_match.group(1)
+
+    sn_link_match = re.search(r'(https://[^/]*\.service-now\.com/\S+)', full_text)
+    if sn_link_match:
+        link = sn_link_match.group(1).rstrip('.')
+    else:
+        # Fallback to people portal if SN not found
+        people_link_match = re.search(r'(https://processes\.people\.epam\.com/\S+)', full_text)
+        if people_link_match:
+            link = people_link_match.group(1).rstrip('.')
+        else:
+            # Fallback to any https link
+            any_link_match = re.search(r'(https://\S+)', full_text)
+            if any_link_match:
+                link = any_link_match.group(1).rstrip('.')
+
+    # 9. Add to unique report
+    d = load_report()
+    
     if name not in d:
         d[name] = {
             'city': city,
             'type': 'NPR' if (is_npr or is_trans) else 'ER',
-            'date': datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            'date': req_date,
+            'link': link,
+            'ticket_id': ticket_id_in_report
         }
-        with open('weekly_report.json','w',encoding='utf-8') as fj:
-            json.dump(d, fj, ensure_ascii=False, indent=4)
+        save_report(d)
 
 def send_weekly_report():
     data = load_report()
-    
-    KNOWN_CITIES = ["Бишкек", "Караганда", "Астана", "Алматы", "Ташкент"]
-    all_cities = list(KNOWN_CITIES)
-    
-    for city in data.keys():
-        if city not in all_cities and city != "Другое":
-            all_cities.append(city)
-            
-    # Если есть "Другое", добавим его в самый конец
-    if "Другое" in data.keys() and "Другое" not in all_cities:
-        all_cities.append("Другое")
-            
-    lines = ["📊 **Еженедельный отчет по сотрудникам**\n"]
-    has_any_data = False
-    
-    for city in all_cities:
-        city_data = data.get(city, {"npr": [], "er": []})
-        npr_count = len(city_data["npr"])
-        er_count = len(city_data["er"])
+    if not data:
+        logger.info("Отчет пуст, отправка отменена.")
+        return
+
+    # Группируем данные
+    grouped = {}
+    for name, info in data.items():
+        city = info.get('city', 'Other')
+        if city not in grouped:
+            grouped[city] = {'NPR': [], 'ER': []}
         
-        if npr_count > 0 or er_count > 0:
-            has_any_data = True
-            
-        lines.append(f"**{city}**: NPR - {npr_count}, ER - {er_count}")
+        # Красивое форматирование даты
+        raw_date = str(info.get('date', 'Unknown'))
+        formatted_date = raw_date
         
-    if not has_any_data:
-        lines.append("\n*За эту неделю не было увольнений или приема на работу.*")
+        # Если дата в формате 2026-06-15, конвертируем в 15 Jun 2026
+        if re.match(r'\d{4}-\d{2}-\d{2}', raw_date):
+            try:
+                dt = datetime.strptime(raw_date, '%Y-%m-%d')
+                formatted_date = dt.strftime('%d %b %Y')
+            except:
+                pass
+
+        ticket_label = info.get('ticket_id', 'ServiceNow')
+        entry = f"{name} ({info.get('type', 'NPR')}) | {formatted_date} | [{ticket_label} | ServiceNow]({info.get('link', '#')})"
+        grouped[city][info.get('type', 'NPR')].append(entry)
+
+    # 1. Заголовок
+    report_msg = "📊 **Weekly Employee Report**\n"
     
-    report_msg = "\n".join(lines)
+    # Сортируем города точно как в скрине (Almaty, Astana, Bishkek, Karaganda, Tashkent)
+    CITY_ORDER = ["Almaty", "Astana", "Bishkek", "Karaganda", "Tashkent"]
+    sorted_cities = [c for c in CITY_ORDER if c in grouped] + sorted([c for c in grouped if c not in CITY_ORDER])
     
-    # Отправляем в отдельный канал, если он задан. Иначе - в основной.
+    # 2. Summary
+    report_msg += "Summary:\n"
+    # Сортируем города точно как в скрине (Almaty, Astana, Bishkek, Karaganda, Tashkent)
+    CITY_ORDER = ["Almaty", "Astana", "Bishkek", "Karaganda", "Tashkent"]
+    
+    for city in CITY_ORDER:
+        # Берем данные из grouped, если города там нет, ставим нули
+        city_data = grouped.get(city, {'NPR': [], 'ER': []})
+        npr_count = len(city_data['NPR'])
+        er_count = len(city_data['ER'])
+        report_msg += f"• **{city}**: NPR: {npr_count}, ER: {er_count}  \n"
+    
+    # Добавляем города, которых нет в CITY_ORDER, но которые есть в данных
+    for city in sorted(grouped.keys()):
+        if city not in CITY_ORDER:
+            npr_count = len(grouped[city]['NPR'])
+            er_count = len(grouped[city]['ER'])
+            report_msg += f"• **{city}**: NPR: {npr_count}, ER: {er_count}  \n"
+    
+    report_msg += "\nDetails:\n"
+    
+    # 3. Details
+    for city in sorted_cities:
+        report_msg += f"📍 **{city}:**\n"
+        
+        # Сначала NPR, потом ER
+        all_people = grouped[city]['NPR'] + grouped[city]['ER']
+        for person_line in all_people:
+            report_msg += f"• {person_line}  \n"
+        
+        report_msg += "\n"
+    
     report_wh = TEAMS_REPORT_WEBHOOK_URL if TEAMS_REPORT_WEBHOOK_URL else TEAMS_WEBHOOK_URL
     send_teams_notification(report_msg, webhook_url=report_wh)
     
@@ -209,7 +284,7 @@ def cleanup_html(html_str):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-def parse_ticket(subject, body):
+def parse_ticket(subject, body, country_tag=""):
     clean_body = cleanup_html(body)
     
     # 1. Сначала проверяем на рассылку SolarWinds
@@ -227,7 +302,7 @@ def parse_ticket(subject, body):
         # Выбираем эмодзи по статусу
         status_icon = "🔴" if "down" in status_val.lower() else ("🟢" if "up" in status_val.lower() else "⚠️")
         
-        msg_sw = f"{status_icon} **Мониторинг SolarWinds**\n\n"
+        msg_sw = f"{status_icon} **Мониторинг SolarWinds** {country_tag}\n\n"
         msg_sw += f"**Оборудование:** {alert_val}\n"
         msg_sw += f"**Локация:** {loc_val}\n"
         msg_sw += f"**IP:** {ip_val}\n"
@@ -238,30 +313,40 @@ def parse_ticket(subject, body):
         
         return msg_sw, is_critical
 
-    # 2. Игнорируем ненужные типы писем (Work Orders и Закрытые тикеты)
-    # Если это Work Order
-    if "WO00" in subject or "Work Order" in subject:
+    # 2. Фильтрация типов и статусов
+    # Для Узбекистана отправляем ТОЛЬКО Инциденты (INC) и SLA уведомления
+    if country_tag == "[UZ]":
+        is_sla = "has reached" in subject.lower() and "sla" in subject.lower()
+        is_inc = "INC" in subject
+        if not (is_inc or is_sla):
+            # Если это запрос (RITM) для Узбекистана - игнорируем
+            return 'IGNORE'
+
+    # Игнорируем Work Orders (WO) и Задачи каталога (SCTASK)
+    if any(kw in subject for kw in ["WO00", "Work Order", "SCTASK"]):
         return 'IGNORE'
     
-    # Если это письмо о закрытии/решении тикета
+    # Игнорируем Zabbix и автоматические уведомления о тонере/оборудовании
+    if "ZABBIX" in subject.upper() or "Auto_EPM" in subject:
+        return 'IGNORE'
+    
+    # Игнорируем письма о решении/закрытии (для всех типов, включая INC и RITM)
     if "has been closed" in subject.lower() or "has been resolved" in subject.lower():
         return 'IGNORE'
         
-    # Игнорируем SCTASK, так как они дублируют RITM
-    if "SCTASK" in subject or "RITM" in subject:
-        return 'IGNORE'
-        
-    # Если это SLA уведомление, помечаем его как критическое
+    # Если это SLA уведомление, это нам нужно
     is_sla_alert = False
     if "has reached" in subject.lower() and "sla" in subject.lower():
         is_sla_alert = True
         
-    # 3. Ищем номер тикета (INC, RITM или SCTASK)
-    ticket_match = re.search(r'(INC\d+|SCTASK\d+)', subject)
-    if not ticket_match:
-        return None # Это не тикет и не алерт, вернем None (чтобы отправить обычное превью)
+    # 3. Ищем номер тикета (INC или RITM)
+    ticket_match = re.search(r'(INC\d+|RITM\d+)', subject)
+    
+    # Если это не INC, не RITM и не SLA алерт - игнорируем (никаких "обычных" писем)
+    if not ticket_match and not is_sla_alert:
+        return 'IGNORE'
         
-    ticket_id = ticket_match.group(1)
+    ticket_id = ticket_match.group(1) if ticket_match else "SLA Alert"
     
     # 4. Ищем подлинную ссылку на тикет в нетронутом HTML-коде письма
     # EPAM обычно делает сам номер тикета (INC...) кликабельной ссылкой
@@ -303,12 +388,14 @@ def parse_ticket(subject, body):
     if is_sla_alert:
         ticket_type = "⏰ ВНИМАНИЕ: Нарушение SLA для"
     
+    tag_str = f" {country_tag}" if country_tag else ""
+    
     # Формируем итоговое сообщение
-    # Teams поддерживает синтаксис маркдауна: [текст](ссылка)
+    # Формат из скриншота: 🟢 RITM Запрос [UZ]: **RITM0002189104**
     if ticket_url:
-        msg = f"{ticket_type}: [{ticket_id}]({ticket_url})\n\n"
+        msg = f"{ticket_type}{tag_str}: [**{ticket_id}**]({ticket_url})\n\n"
     else:
-        msg = f"{ticket_type}: **{ticket_id}**\n\n"
+        msg = f"{ticket_type}{tag_str}: **{ticket_id}**\n\n"
         
     msg += f"**Тема:** {title}\n"
     
@@ -331,11 +418,11 @@ def parse_ticket(subject, body):
     return msg, is_critical
 
 def test_report_logic():
-    print("\n--- ТЕСТ ПАРСИНГА ОТЧЕТА ---")
+    print("\n--- ТЕСТ ПАРСИНГА ОТЧЕТА (ВКЛЮЧАЯ СТАРЫЕ ПИСЬМА) ---")
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
-    # Определяем полночь понедельника текущей недели
-    limit_date = now - timedelta(days=now.weekday())
+    # Берем письма за последние 30 дней для теста
+    limit_date = now - timedelta(days=30)
     limit_date = limit_date.replace(hour=0, minute=0, second=0, microsecond=0)
     account = authenticate_outlook()
     mailbox = account.mailbox()
@@ -349,28 +436,15 @@ def test_report_logic():
             
         subject = message.subject
         
-        # Полностью игнорируем SCTASK, берем только RITM и др.
-        if "SCTASK" in subject or "RITM" in subject:
-            continue
-            
         clean_body = cleanup_html(message.body)
         full_text = subject + " " + clean_body
         
         # Диагностика каждого письма, где упоминается NPR или ER и нужный город
         if ("NPR" in full_text or "ER" in full_text or "Transformation from Trainee" in full_text):
-            print(f"\n[ДИАГНОСТИКА] Найдено письмо: {subject}")
+            logger.info(f"Диагностика письма (ID задачи в процессе...)")
             
             is_npr = "NPR" in full_text and "Prepare workstation" in full_text
             is_er = "ER" in full_text and ("Dismount" in full_text or "Exit" in full_text)
-            
-            print(f"  - is_npr: {is_npr} ('Prepare workstation' найдено: {'Prepare workstation' in full_text})")
-            print(f"  - is_er: {is_er} ('Dismount' или 'Exit' найдено: {'Dismount' in full_text or 'Exit' in full_text})")
-            
-            match = re.search(r'(?:NPR|ER)\s*\([^)]+\)\s*\(([^)]+)\)', full_text)
-            print(f"  - Регулярка на имя (NPR/ER (id) (Name)): {'СОВПАЛО: ' + match.group(1) if match else 'НЕ СОВПАЛО'}")
-            
-            loc_match = re.search(r'Location:\s*(.*?)(?:Description|Title|Service|Request Details|Comments|$)', full_text, re.IGNORECASE)
-            print(f"  - Поиск Location: {'СОВПАЛО: ' + loc_match.group(1).strip() if loc_match else 'НЕ СОВПАЛО'}")
             
             extract_report_data(full_text, subject)
     
@@ -395,29 +469,39 @@ def main():
     
     while True:
         try:
-            now = datetime.datetime.now()
-            # Проверяем, наступила ли пятница (4 - это пятница) и время после 15:00
-            if now.weekday() == 4 and now.hour >= 15:
-                if last_report_date != now.date():
+            # Используем UTC для надежности
+            now_utc = datetime.now(timezone.utc)
+            # Астана/Алматы - это UTC+5. Значит 18:00 там = 13:00 UTC
+            
+            # Полночь понедельника ТЕКУЩЕЙ недели
+            monday_start = now_utc - timedelta(days=now_utc.weekday())
+            monday_start = monday_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # Проверяем, наступила ли пятница (4 - это пятница)
+            # 13:00 UTC = 18:00 по Астане (UTC+5)
+            if now_utc.weekday() == 4 and now_utc.hour >= 13:
+                if last_report_date != now_utc.date():
                     send_weekly_report()
-                    last_report_date = now.date()
+                    last_report_date = now_utc.date()
 
             # Получаем последние 5 писем из папки 'Inbox'
             messages = mailbox.get_messages(limit=5, download_attachments=False)
             
             for message in messages:
                 if message.object_id not in processed_emails:
-                    if "SCTASK" in message.subject or "RITM" in message.subject:
+                    # Пропускаем письма старше начала текущей недели для отчета
+                    if message.received.replace(tzinfo=None) < monday_start:
                         processed_emails.add(message.object_id)
                         continue
+
                     emails_checked += 1
-                    # Фильтрация по получателю, если задан TARGET_EMAIL (может быть несколько через запятую)
+                    # Фильтрация по получателю
+                    to_addresses = [recipient.address.lower() for recipient in message.to]
+                    cc_addresses = [recipient.address.lower() for recipient in message.cc] if hasattr(message, 'cc') else []
+                    all_recipients = to_addresses + cc_addresses
+
                     if TARGET_EMAIL:
                         target_emails = [email.strip().lower() for email in TARGET_EMAIL.split(',') if email.strip()]
-                        to_addresses = [recipient.address.lower() for recipient in message.to]
-                        cc_addresses = [recipient.address.lower() for recipient in message.cc] if hasattr(message, 'cc') else []
-                        all_recipients = to_addresses + cc_addresses
-                        
                         if not any(target in all_recipients for target in target_emails):
                             processed_emails.add(message.object_id)
                             continue
@@ -430,10 +514,18 @@ def main():
                         full_text = subject + " " + clean_msg_body
                         
                         # Собираем данные для отчета ВСЕГДА, даже если письмо потом уйдет в IGNORE (например, это сообщение о закрытии "has been resolved")
-                        extract_report_data(full_text, subject)
+                        extract_report_data(clean_msg_body, subject)
                         
+                        # Определяем метку страны по получателю
+                        country_tag = ""
+                        for addr in all_recipients:
+                            if 'uzbekistan' in addr: country_tag = "[UZ]"
+                            elif 'kazakhstan' in addr: country_tag = "[KZ]"
+                            elif 'kyrgyzstan' in addr: country_tag = "[KG]"
+                            if country_tag: break
+
                         # Пытаемся распарсить тикет
-                        parsed_result = parse_ticket(subject, message.body)
+                        parsed_result = parse_ticket(subject, message.body, country_tag=country_tag)
                         
                         if parsed_result == 'IGNORE':
                             # Это Work Order, пропускаем (но добавляем в обработанные)
@@ -447,28 +539,20 @@ def main():
                             notification, is_critical_ticket = parsed_result
                             
                             # Извлекаем ID тикета или оборудования, чтобы проверить, не отправляли ли мы его уже
-                            ticket_match = re.search(r'(INC\d+|SCTASK\d+|EP\w+\.epam\.com)', notification)
+                            ticket_match = re.search(r'(INC\d+|RITM\d+|EP\w+\.epam\.com)', notification)
+                            t_id = ticket_match.group(1) if ticket_match else "Unknown ID"
+
                             if ticket_match:
-                                t_id = ticket_match.group(1)
                                 if t_id in notified_tickets:
                                     logger.info(f"Дубликат тикета пропущен: {t_id}")
                                     processed_emails.add(message.object_id)
                                     continue
                                 notified_tickets.add(t_id)
 
-                            logger.info(f"Распарсен тикет из письма: {subject}")
-                        else:
-                            # Обычное письмо (не тикет EPAM поддерки), отправляем как раньше
-                            body_preview = message.body_preview[:100] + "..."
-                            notification = (
-                                f"📩 **Новое письмо!**\n\n"
-                                f"**От:** {sender}\n"
-                                f"**Тема:** {subject}\n"
-                                f"**Текст:** {body_preview}\n"
-                            )
-                            logger.info(f"Найдено обычное письмо: {subject}")
-                            
-                        send_teams_notification(notification, is_critical=is_critical_ticket)
+                            logger.info(f"Обработан тикет: {t_id}")
+                            send_teams_notification(notification, is_critical=is_critical_ticket)
+                        
+                        # Блок для обычных писем удален, так как нужны только RITM, INC и SLA
                     
                     processed_emails.add(message.object_id)
             
