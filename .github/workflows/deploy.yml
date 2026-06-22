@@ -23,7 +23,11 @@ jobs:
             cd ~/my_bot/email_notifier_bot
             git fetch origin main
             git reset --hard origin/main
-            # Пересобираем и перезапускаем контейнеры
+            # Останавливаем и удаляем старые контейнеры, чтобы избежать конфликтов имен
+            sudo docker-compose down || true
+            sudo docker stop email_notifier_bot || true
+            sudo docker rm email_notifier_bot || true
+            # Пересобираем и перезапускаем
             sudo docker-compose up --build -d
             # Очистка старых образов для экономии места
             sudo docker image prune -f
