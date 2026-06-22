@@ -21,7 +21,8 @@ jobs:
           port: 22
           script: |
             cd ~/my_bot/email_notifier_bot
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             # Пересобираем и перезапускаем контейнеры
             sudo docker-compose up --build -d
             # Очистка старых образов для экономии места
