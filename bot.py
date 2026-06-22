@@ -20,7 +20,7 @@ TEAMS_WEBHOOK_URL = os.getenv('TEAMS_WEBHOOK_URL')
 TEAMS_REPORT_WEBHOOK_URL = os.getenv('TEAMS_REPORT_WEBHOOK_URL')
 TARGET_EMAIL = os.getenv('TARGET_EMAIL')
 
-# Настройка логирования (Тест CI/CD v2)
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 

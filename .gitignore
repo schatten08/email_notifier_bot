@@ -2,6 +2,11 @@
 .env
 o365_token.txt
 
+# Логи и данные
+*.log
+bot_log.txt
+weekly_report.json
+
 # Python кэш и артефакты
 __pycache__/
 *.pyc
