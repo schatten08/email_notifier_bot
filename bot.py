@@ -334,7 +334,7 @@ def parse_ticket(subject, body, country_tag=""):
         return 'IGNORE'
     
     # Игнорируем письма о решении/закрытии (для всех типов, включая INC и RITM)
-    if "has been closed" in subject.lower() or "has been resolved" in subject.lower():
+    if any(kw in subject.lower() for kw in ["has been closed", "has been resolved", "withdrawn"]):
         return 'IGNORE'
         
     # Если это SLA уведомление, это нам нужно
