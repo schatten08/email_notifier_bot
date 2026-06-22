@@ -490,7 +490,8 @@ def main():
             for message in messages:
                 if message.object_id not in processed_emails:
                     # Пропускаем письма старше начала текущей недели для отчета
-                    if message.received.replace(tzinfo=None) < monday_start:
+                    # Используем корректное сравнение aware datetimes
+                    if message.received < monday_start:
                         processed_emails.add(message.object_id)
                         continue
 
