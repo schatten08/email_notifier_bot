@@ -29,6 +29,9 @@ start_time = datetime.now()
 emails_checked = 0
 tickets_sent = 0
 REPORT_FILE = "weekly_report.json"
+# Хранилище ID обработанных писем и тикетов (держим в памяти)
+processed_emails = set()
+notified_tickets = set()
 
 def load_report():
     if os.path.exists(REPORT_FILE):
@@ -453,14 +456,10 @@ def test_report_logic():
     print("--- КОНЕЦ ТЕСТА ---\n")
 
 def main():
-    global emails_checked
+    global emails_checked, processed_emails, notified_tickets
     account = authenticate_outlook()
     mailbox = account.mailbox()
     
-    # Хранилище ID обработанных писем, чтобы не слать дубликаты
-    processed_emails = set()
-    # Хранилище ID отправленных тикетов/алертов, чтобы не слать дубли (INC, RITM и т.д.)
-    notified_tickets = set()
     is_first_run = True
     last_report_date = None
     
@@ -484,8 +483,8 @@ def main():
                     send_weekly_report()
                     last_report_date = now_utc.date()
 
-            # Получаем последние 5 писем из папки 'Inbox'
-            messages = mailbox.get_messages(limit=5, download_attachments=False)
+            # Получаем последние 10 писем из папки 'Inbox' (увеличили лимит, чтобы не пропускать)
+            messages = mailbox.get_messages(limit=10, download_attachments=False)
             
             for message in messages:
                 if message.object_id not in processed_emails:
@@ -493,6 +492,16 @@ def main():
                     # Используем корректное сравнение aware datetimes
                     if message.received < monday_start:
                         processed_emails.add(message.object_id)
+                        continue
+
+                    # Если это первый запуск, просто добавляем ИД письма в базу и не шлем уведомление.
+                    # Это предотвратит дублирование старых писем при перезагрузке бота.
+                    if is_first_run:
+                        processed_emails.add(message.object_id)
+                        # Также пытаемся вытащить ID тикета из темы, чтобы заблокировать его
+                        ticket_match = re.search(r'(INC\d+|RITM\d+)', message.subject)
+                        if ticket_match:
+                            notified_tickets.add(ticket_match.group(1))
                         continue
 
                     emails_checked += 1
@@ -510,6 +519,16 @@ def main():
                     # Если это не первый запуск, отправляем уведомление
                     if not is_first_run: 
                         subject = message.subject
+                        
+                        # Дополнительная проверка: если мы уже видели этот тикет в этом сеансе, скипаем всё
+                        ticket_id_quick = None
+                        quick_match = re.search(r'(INC\d+|RITM\d+)', subject)
+                        if quick_match:
+                            ticket_id_quick = quick_match.group(1)
+                            if ticket_id_quick in notified_tickets:
+                                processed_emails.add(message.object_id)
+                                continue
+
                         sender = message.sender.address
                         clean_msg_body = cleanup_html(message.body)
                         full_text = subject + " " + clean_msg_body
@@ -561,11 +580,11 @@ def main():
             if is_first_run:
                 is_first_run = False
             
-            # Ограничиваем размер кеша обработанных писем
-            if len(processed_emails) > 100:
-                processed_emails = set(list(processed_emails)[-50:])
-            if len(notified_tickets) > 50:
-                notified_tickets = set(list(notified_tickets)[-25:])
+            # Ограничиваем размер кеша обработанных писем (увеличили до 500 для надежности)
+            if len(processed_emails) > 500:
+                processed_emails = set(list(processed_emails)[-250:])
+            if len(notified_tickets) > 200:
+                notified_tickets = set(list(notified_tickets)[-100:])
                 
         except Exception as e:
             logger.error(f"Ошибка при проверке почты: {e}")
