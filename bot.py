@@ -19,6 +19,7 @@ TENANT_ID = os.getenv('TENANT_ID')
 TEAMS_WEBHOOK_URL = os.getenv('TEAMS_WEBHOOK_URL')
 TEAMS_REPORT_WEBHOOK_URL = os.getenv('TEAMS_REPORT_WEBHOOK_URL')
 TARGET_EMAIL = os.getenv('TARGET_EMAIL')
+UPTIME_KUMA_PUSH_URL = os.getenv('UPTIME_KUMA_PUSH_URL')
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -624,7 +625,13 @@ def main():
                 
         except Exception as e:
             logger.exception(f"Критическая ошибка в основном цикле: {e}")
-            # В случае ошибки авторизации может потребоваться переподключение
+            
+        # Сигнал в Uptime Kuma, если настроен URL
+        if UPTIME_KUMA_PUSH_URL:
+            try:
+                requests.get(UPTIME_KUMA_PUSH_URL, timeout=10)
+            except Exception as e:
+                logger.error(f"Ошибка отправки heartbeat в Uptime Kuma: {e}")
             
         # Ждем 60 секунд перед следующей проверкой
         time.sleep(60)
