@@ -29,144 +29,165 @@ start_time = datetime.now()
 emails_checked = 0
 tickets_sent = 0
 REPORT_FILE = "weekly_report.json"
-# Хранилище ID обработанных писем и тикетов (держим в памяти)
+CHECKPOINT_FILE = "bot_checkpoint.json"
+
+# Хранилище ID обработанных писем и тикетов
 processed_emails = set()
 notified_tickets = set()
 
+def load_checkpoint():
+    """Загружает ID обработанных писем и тикетов из файла."""
+    global processed_emails, notified_tickets
+    if os.path.exists(CHECKPOINT_FILE):
+        try:
+            with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                processed_emails = set(data.get('processed_emails', []))
+                notified_tickets = set(data.get('notified_tickets', []))
+                logger.info(f"Чекпоинт загружен: {len(processed_emails)} писем, {len(notified_tickets)} тикетов.")
+        except Exception as e:
+            logger.error(f"Ошибка при загрузке чекпоинта: {e}")
+
+def save_checkpoint():
+    """Сохраняет ID обработанных писем и тикетов в файл."""
+    try:
+        data = {
+            'processed_emails': list(processed_emails),
+            'notified_tickets': list(notified_tickets)
+        }
+        with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении чекпоинта: {e}")
+
 def load_report():
     if os.path.exists(REPORT_FILE):
+        if os.path.isdir(REPORT_FILE):
+            logger.error(f"Критическая ошибка: {REPORT_FILE} является директорией!")
+            return {}
         with open(REPORT_FILE, 'r', encoding='utf-8') as f:
             try:
                 data = json.load(f)
-                # Проверка на то, старый ли это формат
                 if "npr" in data and isinstance(data["npr"], list):
                     return {}
                 return data
-            except:
+            except Exception as e:
+                logger.error(f"Ошибка при чтении отчета: {e}")
                 return {}
     return {}
 
 def save_report(data):
-    with open(REPORT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    try:
+        with open(REPORT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении отчета: {e}")
 
-def extract_report_data(full_text, subject):
-    # 1. Skip non-relevant updates
-    # We only care about FINAL states.
-    # Notifications about ASSIGNMENT, SLA, SUSPENSION or CREATION should be ignored.
-    lower_subject = subject.lower()
-    ignore_keywords = ['assigned', 'sla', 'pending', 'suspended', 'created', 'assigned to']
-    if any(kw in lower_subject for kw in ignore_keywords):
-        return
-
-    # 2. Final state detection
-    is_final = any(kw in lower_subject for kw in ['resolved', 'closed', 'exit task', 'completed'])
-    
-    # If it's not a terminal state, we skip it
+def parse_employee_info(full_text, subject):
+    """
+    Вспомогательная функция для извлечения данных о сотруднике (NPR/ER).
+    Возвращает словарь с данными или None.
+    """
+    # 1. Final state detection
+    is_final = any(kw in subject.lower() for kw in ['resolved', 'closed', 'exit task', 'completed'])
     if not is_final:
-        return
+        return None
     
-    # 3. Identify types
+    # 2. Identify types
     is_npr = 'NPR' in full_text and 'Prepare workstation' in full_text
     is_er = 'ER' in full_text and ('Dismount' in full_text or 'Exit' in full_text)
     is_trans = 'Transformation from Trainee' in full_text
     
-    if not (is_npr or is_er or is_trans): return
+    if not (is_npr or is_er or is_trans):
+        return None
     
-    # 4. Skip Students / Trainees (unless it is a Transformation)
-    # Most students/interns are marked as 'Trainee' or 'Student'
+    # 3. Skip Students / Trainees (unless it is a Transformation)
     if not is_trans:
         if re.search(r'(Title|Employee title|Employment type):.*(Student|Trainee)', full_text, re.IGNORECASE):
-            return
+            return None
     
-    # 5. Extract Name
+    # 4. Extract Name
     name = None
     if is_trans:
         m = re.search(r'Trainee:\s*(.*?)(?:,| effective)', full_text, re.IGNORECASE)
         if m: name = m.group(1).strip()
     else:
-        # Priority 1: Title field
         m = re.search(r'Title:\s*([A-Z][a-z]+ [A-Z][a-z]+)', full_text)
         if not m:
-            # Priority 2: Request subject pattern
             m = re.search(r'(?:NPR|ER)\s*\([^)]+\)\s*\(([^)]+)\)', full_text)
         if m: name = m.group(1).strip()
         
-    if not name: return
+    if not name:
+        return None
     
-    # 6. Date extraction
+    # 5. Date extraction
     req_date = "Unknown"
-    # Try looking in specific fields or patterns
     m_date = re.search(r'(?:effective from|Dismissal Date|Start Date|First Working Day)[:\s]*(\d{4}-\d{2}-\d{2}|\d+\s*[A-Z][a-z]+\s*\d{4})', full_text, re.IGNORECASE)
     if m_date:
         req_date = m_date.group(1).split(' ')[0] if '-' in m_date.group(1) else m_date.group(1)
     else:
-        # Try to extract date from the Title field like "NPR (15 Jun 2026)"
         m_title_date = re.search(r'(?:NPR|ER|Transformation)[^()]*\(([^)]+)\)', subject, re.IGNORECASE)
-        if not m_title_date:
-            m_title_date = re.search(r'(?:NPR|ER|Transformation)[^()]*\(([^)]+)\)', full_text, re.IGNORECASE)
-        
         if m_title_date:
             req_date = m_title_date.group(1)
 
-    # 7. Resolve City (Strict)
+    # 6. Resolve City (Strict)
     city = None
+    # Сначала ищем строго в поле Location
     m_loc = re.search(r'Location:\s*(.*?)(?:\n|Description|Service|Priority|Title|$)', full_text, re.IGNORECASE)
-    loc_val = m_loc.group(1).lower() if m_loc else ''
-    
-    if 'almaty' in loc_val or 'алматы' in loc_val: city = 'Almaty'
-    elif 'astana' in loc_val or 'астана' in loc_val: city = 'Astana'
-    elif 'bishkek' in loc_val or 'бишкек' in loc_val: city = 'Bishkek'
-    elif 'karaganda' in loc_val or 'караганда' in loc_val: city = 'Karaganda'
-    elif 'tashkent' in loc_val or 'ташкент' in loc_val: city = 'Tashkent'
+    if m_loc:
+        loc_val = m_loc.group(1).lower()
+        for c in ['Almaty', 'Astana', 'Bishkek', 'Karaganda', 'Tashkent']:
+            if c.lower() in loc_val:
+                city = c
+                break
     
     if not city:
         # Fallback to body scan
         t = full_text.lower()
-        if 'almaty' in t or 'алматы' in t: city = 'Almaty'
-        elif 'astana' in t or 'астана' in t: city = 'Astana'
-        elif 'bishkek' in t or 'бишкек' in t: city = 'Bishkek'
-        elif 'karaganda' in t or 'караганда' in t: city = 'Karaganda'
-        elif 'tashkent' in t or 'ташкент' in t: city = 'Tashkent'
-        
-    if not city: return
-    
-    # 8. Link extraction
-    # Prefer ServiceNow (SN) links for the report
+        for c in ['Almaty', 'Astana', 'Bishkek', 'Karaganda', 'Tashkent']:
+            if c.lower() in t:
+                city = c
+                break
+                
+    if not city:
+        return None
+
+    # 7. Link / Ticket ID
     link = "#"
-    ticket_id_in_report = "ServiceNow"
-    
-    # Try to find RITM or SCTASK in the link/text to make a better label
+    ticket_id = "ServiceNow"
     id_match = re.search(r'(RITM\d+|SCTASK\d+)', full_text)
     if id_match:
-        ticket_id_in_report = id_match.group(1)
+        ticket_id = id_match.group(1)
 
     sn_link_match = re.search(r'(https://[^/]*\.service-now\.com/\S+)', full_text)
     if sn_link_match:
         link = sn_link_match.group(1).rstrip('.')
     else:
-        # Fallback to people portal if SN not found
         people_link_match = re.search(r'(https://processes\.people\.epam\.com/\S+)', full_text)
         if people_link_match:
             link = people_link_match.group(1).rstrip('.')
-        else:
-            # Fallback to any https link
-            any_link_match = re.search(r'(https://\S+)', full_text)
-            if any_link_match:
-                link = any_link_match.group(1).rstrip('.')
 
-    # 9. Add to unique report
+    return {
+        'name': name,
+        'city': city,
+        'type': 'NPR' if (is_npr or is_trans) else 'ER',
+        'date': req_date,
+        'link': link,
+        'ticket_id': ticket_id
+    }
+
+def extract_report_data(full_text, subject):
+    """Вызывается для каждого письма, чтобы наполнить еженедельный отчет."""
+    info = parse_employee_info(full_text, subject)
+    if not info:
+        return
+
     d = load_report()
-    
+    name = info.pop('name')
     if name not in d:
-        d[name] = {
-            'city': city,
-            'type': 'NPR' if (is_npr or is_trans) else 'ER',
-            'date': req_date,
-            'link': link,
-            'ticket_id': ticket_id_in_report
-        }
+        d[name] = info
         save_report(d)
+
 
 def send_weekly_report():
     data = load_report()
@@ -457,21 +478,33 @@ def test_report_logic():
 
 def main():
     global emails_checked, processed_emails, notified_tickets
+    
+    # 1. Проверка токена
+    if not os.path.exists("o365_token.txt"):
+        logger.error("Критическая ошибка: Файл o365_token.txt не найден! Бот не сможет авторизоваться.")
+    
+    # 2. Загрузка чекпоинта
+    load_checkpoint()
+    
     account = authenticate_outlook()
     mailbox = account.mailbox()
     
     is_first_run = True
     last_report_date = None
+    last_health_check = datetime.now()
     
-    # При первом запуске помечаем текущие письма как прочитанные для бота
     logger.info("Бот запущен. Проверяю почту для Teams...")
     
     while True:
         try:
-            # Используем UTC для надежности
             now_utc = datetime.now(timezone.utc)
-            # Астана/Алматы - это UTC+5. Значит 18:00 там = 13:00 UTC
             
+            # Health Check раз в 24 часа
+            if (datetime.now() - last_health_check).total_seconds() > 86400:
+                health_msg = f"✅ **Health Check**: Бот работает стабильно.\nПроверено писем с запуска: {emails_checked}\nТикетов в кеше: {len(notified_tickets)}"
+                send_teams_notification(health_msg)
+                last_health_check = datetime.now()
+
             # Полночь понедельника ТЕКУЩЕЙ недели
             monday_start = now_utc - timedelta(days=now_utc.weekday())
             monday_start = monday_start.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -585,9 +618,12 @@ def main():
                 processed_emails = set(list(processed_emails)[-250:])
             if len(notified_tickets) > 200:
                 notified_tickets = set(list(notified_tickets)[-100:])
+            
+            # Сохраняем прогресс каждое прохождение цикла
+            save_checkpoint()
                 
         except Exception as e:
-            logger.error(f"Ошибка при проверке почты: {e}")
+            logger.exception(f"Критическая ошибка в основном цикле: {e}")
             # В случае ошибки авторизации может потребоваться переподключение
             
         # Ждем 60 секунд перед следующей проверкой
