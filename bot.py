@@ -42,12 +42,18 @@ def load_checkpoint():
     global processed_emails, notified_tickets
     if os.path.exists(CHECKPOINT_FILE):
         try:
+            if os.path.getsize(CHECKPOINT_FILE) == 0:
+                logger.info("Чекпоинт пуст, инициализация.")
+                return
             with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 processed_emails = set(data.get('processed_emails', []))
                 notified_tickets = set(data.get('notified_tickets', []))
                 logger.info(f"Чекпоинт загружен: {len(processed_emails)} писем, {len(notified_tickets)} тикетов.")
+        except json.JSONDecodeError:
+            logger.error(f"Ошибка чтения JSON в {CHECKPOINT_FILE}. Файл будет перезаписан.")
         except Exception as e:
+            logger.error(f"Ошибка при загрузке чекпоинта: {e}")
             logger.error(f"Ошибка при загрузке чекпоинта: {e}")
 
 def save_checkpoint():
@@ -356,8 +362,14 @@ def parse_ticket(subject, body, country_tag=""):
     if "ZABBIX" in subject.upper() or "Auto_EPM" in subject:
         return 'IGNORE'
     
-    # Игнорируем письма о решении/закрытии (для всех типов, включая INC и RITM)
-    if any(kw in subject.lower() for kw in ["has been closed", "has been resolved", "withdrawn"]):
+    # Игнорируем письма о решении/закрытии/обновлении (для всех типов, включая INC и RITM)
+    # Пользователь хочет получать только новые ("оформленные") запросы
+    ignore_keywords = [
+        "has been closed", "has been resolved", "withdrawn", 
+        "has been suspended", "has been updated", "has a new comment",
+        "comment has been added", "has been put on hold"
+    ]
+    if any(kw in subject.lower() for kw in ignore_keywords):
         return 'IGNORE'
         
     # Если это SLA уведомление, это нам нужно
