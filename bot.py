@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import re
+import threading
 from datetime import datetime, timedelta, timezone
 import requests
 import json
@@ -477,8 +478,22 @@ def test_report_logic():
     send_weekly_report()
     print("--- КОНЕЦ ТЕСТА ---\n")
 
+def heartbeat_worker():
+    if not UPTIME_KUMA_PUSH_URL:
+        return
+    logger.info(f"Запущен поток Heartbeat для Uptime Kuma: {UPTIME_KUMA_PUSH_URL}")
+    while True:
+        try:
+            requests.get(UPTIME_KUMA_PUSH_URL, timeout=10)
+        except Exception as e:
+            logger.error(f"Ошибка отправки heartbeat в Uptime Kuma: {e}")
+        time.sleep(50)
+
 def main():
     global emails_checked, processed_emails, notified_tickets
+    
+    # Запуск мониторинга в фоне
+    threading.Thread(target=heartbeat_worker, daemon=True).start()
     
     # 1. Проверка токена
     if not os.path.exists("o365_token.txt"):
@@ -554,6 +569,10 @@ def main():
                     if not is_first_run: 
                         subject = message.subject
                         
+                        # Дополнительная проверка: если мы уже видели это письмо, скипаем
+                        if message.object_id in processed_emails:
+                            continue
+
                         # Дополнительная проверка: если мы уже видели этот тикет в этом сеансе, скипаем всё
                         ticket_id_quick = None
                         quick_match = re.search(r'(INC\d+|RITM\d+)', subject)
@@ -625,13 +644,6 @@ def main():
                 
         except Exception as e:
             logger.exception(f"Критическая ошибка в основном цикле: {e}")
-            
-        # Сигнал в Uptime Kuma, если настроен URL
-        if UPTIME_KUMA_PUSH_URL:
-            try:
-                requests.get(UPTIME_KUMA_PUSH_URL, timeout=10)
-            except Exception as e:
-                logger.error(f"Ошибка отправки heartbeat в Uptime Kuma: {e}")
             
         # Ждем 60 секунд перед следующей проверкой
         time.sleep(60)
