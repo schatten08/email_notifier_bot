@@ -20,4 +20,4 @@ env/
 
 # Настройки IDE
 .vscode/
-.idea/
+.idea/bot_checkpoint.json
