@@ -2,6 +2,15 @@
 
 All notable changes to the Outlook Telegram/Teams Bot will be documented in this file.
 
+## [1.3.0] - 2026-06-24
+### Added
+- **Uptime Kuma Integration**: Independent heartbeat thread for reliable monitoring.
+- **Improved Duplicate Prevention**: Strict check by Message ID and Ticket ID to avoid double notifications on restart.
+
+### Fixed
+- **Shopping Bot AI Stability**: Added retry mechanism (3 attempts) for Gemini 503 errors.
+- **Monitoring Glitches**: Heartbeat moved to a separate daemon thread with 50s interval (fixes alternating "Up/Down" status).
+
 ## [1.2.0] - 2026-06-22
 ### Added
 - **CI/CD Pipeline**: GitHub Actions for automated deployment to Linux server via SSH.
