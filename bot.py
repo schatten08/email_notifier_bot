@@ -505,11 +505,13 @@ def main():
     account = authenticate_outlook()
     mailbox = account.mailbox()
     
-    is_first_run = True
+    # Если база пустая (первый раз запускаем), то помечаем как первый запуск, чтобы не спамить
+    is_first_run = (len(processed_emails) == 0)
+    
     last_report_date = None
     last_health_check = datetime.now()
     
-    logger.info("Бот запущен. Проверяю почту для Teams...")
+    logger.info(f"Бот запущен. Состояние: {'Первый запуск' if is_first_run else 'Продолжение работы'}. Проверяю почту...")
     
     while True:
         try:
@@ -559,11 +561,14 @@ def main():
                     cc_addresses = [recipient.address.lower() for recipient in message.cc] if hasattr(message, 'cc') else []
                     all_recipients = to_addresses + cc_addresses
 
-                    if TARGET_EMAIL:
-                        target_emails = [email.strip().lower() for email in TARGET_EMAIL.split(',') if email.strip()]
-                        if not any(target in all_recipients for target in target_emails):
-                            processed_emails.add(message.object_id)
-                            continue
+                    # Если это первый запуск, просто помечаем как обработанные
+                    if is_first_run:
+                        processed_emails.add(message.object_id)
+                        # Пытаемся быстро найти ID тикета в теме, чтобы тоже добавить в игнор
+                        quick_match = re.search(r'(INC\d+|RITM\d+)', message.subject)
+                        if quick_match:
+                            notified_tickets.add(quick_match.group(1))
+                        continue
 
                     # Если это не первый запуск, отправляем уведомление
                     if not is_first_run: 

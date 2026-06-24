@@ -10,4 +10,5 @@ services:
     volumes:
       - ./o365_token.txt:/app/o365_token.txt
       - ./weekly_report.json:/app/weekly_report.json
+      - ./bot_checkpoint.json:/app/bot_checkpoint.json
       - ./bot_log.txt:/app/bot_log.txt
