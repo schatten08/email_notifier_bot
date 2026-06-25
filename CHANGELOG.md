@@ -1,7 +1,9 @@
 # Changelog
 
 All notable changes to the Outlook Telegram/Teams Bot will be documented in this file.
-
+## [1.4.0] - 2026-06-25
+### Added
+- **Global Location Filter**: Added strict filtering to only process notifications from Kazakhstan, Uzbekistan, and Kyrgyzstan. Requests from other regions (e.g. Saudi Arabia, Russia) are now automatically ignored.
 ## [1.3.0] - 2026-06-24
 ### Added
 - **Uptime Kuma Integration**: Independent heartbeat thread for reliable monitoring.

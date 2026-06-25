@@ -319,6 +319,27 @@ def cleanup_html(html_str):
 def parse_ticket(subject, body, country_tag=""):
     clean_body = cleanup_html(body)
     
+    # --- ГЛОБАЛЬНЫЙ ФИЛЬТР ПО ЛОКАЦИИ ---
+    # Мы обрабатываем только Казахстан, Узбекистан и Кыргызстан
+    allowed_countries = ["kazakhstan", "uzbekistan", "kyrgyzstan", "казахстан", "узбекистан", "кыргызстан"]
+    
+    # 1. Ищем локацию в теле письма
+    # Регулярка для быстрого поиска локации (избегаем захвата всего текста до конца письма)
+    loc_search = re.search(r'Location:\s*(.*?)(?:\s{2,}|Title:|Alert:|IP:|Status:|\n|$)', clean_body, re.IGNORECASE)
+    found_location = loc_search.group(1).lower() if loc_search else ""
+    
+    # 2. Проверяем: если локация найдена, должна быть из нашего списка
+    if found_location:
+        if not any(country in found_location for country in allowed_countries):
+            # Локация есть, но она чужая (например, Saudi Arabia или Russia)
+            return 'IGNORE'
+    else:
+        # 3. Если локации в тексте нет, проверяем по тегу страны (из email получателей)
+        if not country_tag:
+            # Нет ни локации в тексте, ни специфичного email получателя - игнорируем
+            return 'IGNORE'
+    # ------------------------------------
+
     # 1. Сначала проверяем на рассылку SolarWinds
     if "Alert:" in clean_body and "Status:" in clean_body:
         alert_match = re.search(r'Alert:\s*(.*?)(?:\s*Location:|\s*IP:|\s*Status:|$)', clean_body)
