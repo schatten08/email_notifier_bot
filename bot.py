@@ -37,6 +37,23 @@ CHECKPOINT_FILE = "bot_checkpoint.json"
 processed_emails = set()
 notified_tickets = set()
 
+# Ответственные за локации (для тегов в Teams)
+LOCATION_RESPONSIBLES = {
+    "[UZ]": [
+        {"name": "Bogdan Martemyanov", "email": "bogdan_martemyanov@epam.com"},
+        {"name": "Rasul Gadjiyev", "email": "rasul_gadjiyev@epam.com"}
+    ],
+    "[KZ]": [
+        {"name": "Kuanysh Uvaliyev", "email": "kuanysh_uvaliyev@epam.com"},
+        {"name": "Denis Sribnyy", "email": "denis_sribnyy@epam.com"},
+        {"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"},
+        {"name": "Dmitriy Akimov", "email": "dmitriy_akimov@epam.com"}
+    ],
+    "[KG]": [
+        {"name": "Andrei Trokol", "email": "andrei_trokol@epam.com"}
+    ]
+}
+
 def load_checkpoint():
     """Загружает ID обработанных писем и тикетов из файла."""
     global processed_emails, notified_tickets
@@ -271,6 +288,66 @@ def send_weekly_report():
     # Очищаем отчет после отправки
     save_report({})
     logger.info("Еженедельный отчет отправлен и очищен.")
+
+def send_adaptive_card_with_mentions(text, country_tag, is_critical=False, webhook_url=None):
+    """Отправляет Adaptive Card с тегами сотрудников."""
+    target_url = webhook_url if webhook_url else TEAMS_WEBHOOK_URL
+    if not target_url:
+        return
+    
+    responsibles = LOCATION_RESPONSIBLES.get(country_tag, [])
+    
+    # Цвет полоски (в Adaptive Cards используется style для контейнеров)
+    accent_color = "Attention" if is_critical else "Accent"
+    
+    # Формируем текст упоминаний
+    mention_text = " "
+    entities = []
+    
+    for resp in responsibles:
+        at_text = f"<at>{resp['name']}</at>"
+        mention_text += f"{at_text} "
+        entities.append({
+            "type": "mention",
+            "text": at_text,
+            "mentioned": {
+                "id": resp['email'],
+                "name": resp['name']
+            }
+        })
+
+    # Сообщение с тегами в начале
+    full_text = f"{mention_text}\n\n{text}"
+    
+    payload = {
+        "type": "message",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "type": "AdaptiveCard",
+                    "body": [
+                        {
+                            "type": "TextBlock",
+                            "text": full_text,
+                            "wrap": True
+                        }
+                    ],
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.0",
+                    "msteams": {
+                        "entities": entities
+                    }
+                }
+            }
+        ]
+    }
+    
+    try:
+        response = requests.post(target_url, json=payload)
+        response.raise_for_status()
+    except Exception as e:
+        logger.error(f"Ошибка отправки Adaptive Card: {e}")
 
 def send_teams_notification(text, is_critical=False, webhook_url=None):
     global tickets_sent
@@ -661,7 +738,11 @@ def main():
                                 notified_tickets.add(t_id)
 
                             logger.info(f"Обработан тикет: {t_id}")
-                            send_teams_notification(notification, is_critical=is_critical_ticket)
+                            # Если есть тег страны и ответственные, шлем Adaptive Card с тегами
+                            if country_tag in LOCATION_RESPONSIBLES:
+                                send_adaptive_card_with_mentions(notification, country_tag, is_critical=is_critical_ticket)
+                            else:
+                                send_teams_notification(notification, is_critical=is_critical_ticket)
                         
                         # Блок для обычных писем удален, так как нужны только RITM, INC и SLA
                     
