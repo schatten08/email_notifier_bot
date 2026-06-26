@@ -63,12 +63,7 @@ LOCATION_RESPONSIBLES = {
         {"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"},
         {"name": "Dmitriy Akimov", "email": "dmitriy_akimov@epam.com"}
     ],
-    "kazakhstan": [
-        {"name": "Kuanysh Uvaliyev", "email": "kuanysh_uvaliyev@epam.com"},
-        {"name": "Denis Sribnyy", "email": "denis_sribnyy@epam.com"},
-        {"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"},
-        {"name": "Dmitriy Akimov", "email": "dmitriy_akimov@epam.com"}
-    ]
+    "kazakhstan": []
 }
 
 def load_checkpoint():
