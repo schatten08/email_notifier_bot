@@ -37,20 +37,37 @@ CHECKPOINT_FILE = "bot_checkpoint.json"
 processed_emails = set()
 notified_tickets = set()
 
-# Ответственные за локации (для тегов в Teams)
+# Ответственные за локации и города (для тегов в Teams)
 LOCATION_RESPONSIBLES = {
-    "[UZ]": [
+    "uzbekistan": [
         {"name": "Bogdan Martemyanov", "email": "bogdan_martemyanov@epam.com"},
         {"name": "Rasul Gadjiyev", "email": "rasul_gadjiyev@epam.com"}
     ],
-    "[KZ]": [
+    "tashkent": [
+        {"name": "Bogdan Martemyanov", "email": "bogdan_martemyanov@epam.com"},
+        {"name": "Rasul Gadjiyev", "email": "rasul_gadjiyev@epam.com"}
+    ],
+    "kyrgyzstan": [
+        {"name": "Andrei Trokol", "email": "andrei_trokol@epam.com"}
+    ],
+    "bishkek": [
+        {"name": "Andrei Trokol", "email": "andrei_trokol@epam.com"}
+    ],
+    "karaganda": [
+        {"name": "Kuanysh Uvaliyev", "email": "kuanysh_uvaliyev@epam.com"}
+    ],
+    "astana": [
+        {"name": "Denis Sribnyy", "email": "denis_sribnyy@epam.com"}
+    ],
+    "almaty": [
+        {"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"},
+        {"name": "Dmitriy Akimov", "email": "dmitriy_akimov@epam.com"}
+    ],
+    "kazakhstan": [
         {"name": "Kuanysh Uvaliyev", "email": "kuanysh_uvaliyev@epam.com"},
         {"name": "Denis Sribnyy", "email": "denis_sribnyy@epam.com"},
         {"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"},
         {"name": "Dmitriy Akimov", "email": "dmitriy_akimov@epam.com"}
-    ],
-    "[KG]": [
-        {"name": "Andrei Trokol", "email": "andrei_trokol@epam.com"}
     ]
 }
 
@@ -289,16 +306,19 @@ def send_weekly_report():
     save_report({})
     logger.info("Еженедельный отчет отправлен и очищен.")
 
-def send_adaptive_card_with_mentions(text, country_tag, is_critical=False, webhook_url=None):
-    """Отправляет Adaptive Card с тегами сотрудников."""
+def send_adaptive_card_with_mentions(text, mention_key, is_critical=False, webhook_url=None):
+    """Отправляет Adaptive Card с тегами сотрудников на основе ключа локации/города."""
     target_url = webhook_url if webhook_url else TEAMS_WEBHOOK_URL
     if not target_url:
         return
     
-    responsibles = LOCATION_RESPONSIBLES.get(country_tag, [])
+    # Ищем список людей по ключу (город или страна)
+    responsibles = LOCATION_RESPONSIBLES.get(mention_key.lower(), [])
     
-    # Цвет полоски (в Adaptive Cards используется style для контейнеров)
-    accent_color = "Attention" if is_critical else "Accent"
+    # Если по ключу никого нет, ничего не шлем или шлем без тегов
+    if not responsibles:
+        send_teams_notification(text, is_critical=is_critical, webhook_url=webhook_url)
+        return
     
     # Формируем текст упоминаний
     mention_text = " "
@@ -406,14 +426,35 @@ def parse_ticket(subject, body, country_tag=""):
     found_location = loc_search.group(1).lower() if loc_search else ""
     
     # 2. Проверяем: если локация найдена, должна быть из нашего списка
+    mention_key = None
     if found_location:
-        if not any(country in found_location for country in allowed_countries):
+        # Проверяем города в первую очередь для точного теганья
+        for city in ["almaty", "astana", "karaganda", "tashkent", "bishkek"]:
+            if city in found_location:
+                mention_key = city
+                break
+        
+        # Если город не нашли, проверяем страны
+        if not mention_key:
+            for country in ["kazakhstan", "uzbekistan", "kyrgyzstan", "казахстан", "узбекистан", "кыргызстан"]:
+                if country in found_location:
+                    # Мапим названия на английские ключи
+                    if "казах" in country or "kazakh" in country: mention_key = "kazakhstan"
+                    elif "узбек" in country or "uzbek" in country: mention_key = "uzbekistan"
+                    elif "кыргыз" in country or "kyrgyz" in country: mention_key = "kyrgyzstan"
+                    else: mention_key = country
+                    break
+        
+        if not mention_key:
             # Локация есть, но она чужая (например, Saudi Arabia или Russia)
             return 'IGNORE'
     else:
         # 3. Если локации в тексте нет, проверяем по тегу страны (из email получателей)
-        if not country_tag:
-            # Нет ни локации в тексте, ни специфичного email получателя - игнорируем
+        if country_tag:
+            mapping = {"[KZ]": "kazakhstan", "[UZ]": "uzbekistan", "[KG]": "kyrgyzstan"}
+            mention_key = mapping.get(country_tag)
+        
+        if not mention_key:
             return 'IGNORE'
     # ------------------------------------
 
@@ -432,20 +473,26 @@ def parse_ticket(subject, body, country_tag=""):
         # Выбираем эмодзи по статусу
         status_icon = "🔴" if "down" in status_val.lower() else ("🟢" if "up" in status_val.lower() else "⚠️")
         
-        msg_sw = f"{status_icon} **Мониторинг SolarWinds** {country_tag}\n\n"
+        # Для SolarWinds тоже пытаемся уточнить город из loc_val
+        current_mention = mention_key
+        for city in ["almaty", "astana", "karaganda", "tashkent", "bishkek"]:
+            if city in loc_val.lower():
+                current_mention = city
+                break
+
+        tag_display = country_tag if country_tag else f"[{mention_key.upper()}]"
+        msg_sw = f"{status_icon} **Мониторинг SolarWinds** {tag_display}\n\n"
         msg_sw += f"**Оборудование:** {alert_val}\n"
         msg_sw += f"**Локация:** {loc_val}\n"
         msg_sw += f"**IP:** {ip_val}\n"
         msg_sw += f"**Статус:** {status_val}"
         
-        # Алерты о падении оборудования считаем критичными
         is_critical = True if "down" in status_val.lower() else False
-        
-        return msg_sw, is_critical
+        return msg_sw, is_critical, current_mention
 
     # 2. Фильтрация типов и статусов
     # Для Узбекистана отправляем ТОЛЬКО Инциденты (INC) и SLA уведомления
-    if country_tag == "[UZ]":
+    if mention_key in ["uzbekistan", "tashkent"]:
         is_sla = "has reached" in subject.lower() and "sla" in subject.lower()
         is_inc = "INC" in subject
         if not (is_inc or is_sla):
@@ -461,7 +508,6 @@ def parse_ticket(subject, body, country_tag=""):
         return 'IGNORE'
     
     # Игнорируем письма о решении/закрытии/обновлении (для всех типов, включая INC и RITM)
-    # Пользователь хочет получать только новые ("оформленные") запросы
     ignore_keywords = [
         "has been closed", "has been resolved", "withdrawn", 
         "has been suspended", "has been updated", "has a new comment",
@@ -478,21 +524,19 @@ def parse_ticket(subject, body, country_tag=""):
     # 3. Ищем номер тикета (INC или RITM)
     ticket_match = re.search(r'(INC\d+|RITM\d+)', subject)
     
-    # Если это не INC, не RITM и не SLA алерт - игнорируем (никаких "обычных" писем)
+    # Если это не INC, не RITM и не SLA алерт - игнорируем
     if not ticket_match and not is_sla_alert:
         return 'IGNORE'
         
     ticket_id = ticket_match.group(1) if ticket_match else "SLA Alert"
     
     # 4. Ищем подлинную ссылку на тикет в нетронутом HTML-коде письма
-    # EPAM обычно делает сам номер тикета (INC...) кликабельной ссылкой
     link_match = re.search(fr'href=["\'](https?://[^"\']+)["\'][^>]*>(?:<[^>]+>)*\s*{ticket_id}', str(body), re.IGNORECASE)
     ticket_url = link_match.group(1).replace('&amp;', '&') if link_match else ""
     
     clean_body = cleanup_html(body)
     
-    # 5. Достаем поля с помощью регулярных выражений
-    # Используем более строгие правила остановки для обрезания лишнего текста
+    # 5. Достаем поля
     stop_words = r'(?:Service\s*:|Description\s*:|Priority\s*:|Service Recipient\s*:|SLA Target Date\s*:|Location\s*:|Request Details|Comments:|Ref:|This is an automatically|$)'
     
     title_match = re.search(r'Title:\s*(.*?)' + stop_words, clean_body, re.IGNORECASE)
@@ -507,7 +551,15 @@ def parse_ticket(subject, body, country_tag=""):
     loc_match = re.search(r'Location:\s*(.*?)' + stop_words, clean_body, re.IGNORECASE)
     location = loc_match.group(1).strip() if loc_match else ""
     
-    # Дополнительно укорачиваем поля напрямую, чтобы избежать мусора
+    # Пытаемся уточнить город из поля location для теганья
+    current_mention = mention_key
+    if location:
+        for city in ["almaty", "astana", "karaganda", "tashkent", "bishkek"]:
+            if city in location.lower():
+                current_mention = city
+                break
+
+    # Дополнительно укорачиваем поля
     if len(title) > 80: title = title[:80] + "..."
     if len(location) > 80: location = location[:80] + "..."
     if len(priority) > 30: priority = priority[:30] + "..."
@@ -516,18 +568,15 @@ def parse_ticket(subject, body, country_tag=""):
         ticket_type = "🔴 Инцидент"
     elif ticket_id.startswith("RITM"):
         ticket_type = "🟢 RITM Запрос"
-    elif ticket_id.startswith("SCTASK"):
-        ticket_type = "🟡 Задача каталога (SCTASK)"
     else:
         ticket_type = "📝 Тикет"
         
     if is_sla_alert:
         ticket_type = "⏰ ВНИМАНИЕ: Нарушение SLA для"
     
-    tag_str = f" {country_tag}" if country_tag else ""
+    tag_str = f" {country_tag}" if country_tag else f" [{mention_key.upper()}]"
     
     # Формируем итоговое сообщение
-    # Формат из скриншота: 🟢 RITM Запрос [UZ]: **RITM0002189104**
     if ticket_url:
         msg = f"{ticket_type}{tag_str}: [**{ticket_id}**]({ticket_url})\n\n"
     else:
@@ -547,11 +596,10 @@ def parse_ticket(subject, body, country_tag=""):
     if location:
         msg += f"**Локация:** {location}\n"
     if desc:
-        # Укорачиваем длинное описание
         short_desc = desc[:250] + "..." if len(desc) > 250 else desc
         msg += f"\n**Описание:**\n*{short_desc}*"
         
-    return msg, is_critical
+    return msg, is_critical, current_mention
 
 def test_report_logic():
     print("\n--- ТЕСТ ПАРСИНГА ОТЧЕТА (ВКЛЮЧАЯ СТАРЫЕ ПИСЬМА) ---")
@@ -721,10 +769,11 @@ def main():
                             continue
                             
                         is_critical_ticket = False
+                        mention_key = None
                         
                         if parsed_result:
-                            # parse_ticket теперь возвращает кортеж (text, is_critical)
-                            notification, is_critical_ticket = parsed_result
+                            # parse_ticket теперь возвращает кортеж (text, is_critical, mention_key)
+                            notification, is_critical_ticket, mention_key = parsed_result
                             
                             # Извлекаем ID тикета или оборудования, чтобы проверить, не отправляли ли мы его уже
                             ticket_match = re.search(r'(INC\d+|RITM\d+|EP\w+\.epam\.com)', notification)
@@ -738,9 +787,9 @@ def main():
                                 notified_tickets.add(t_id)
 
                             logger.info(f"Обработан тикет: {t_id}")
-                            # Если есть тег страны и ответственные, шлем Adaptive Card с тегами
-                            if country_tag in LOCATION_RESPONSIBLES:
-                                send_adaptive_card_with_mentions(notification, country_tag, is_critical=is_critical_ticket)
+                            # Если есть ключ для упоминаний (город или страна), шлем Adaptive Card с тегами
+                            if mention_key:
+                                send_adaptive_card_with_mentions(notification, mention_key, is_critical=is_critical_ticket)
                             else:
                                 send_teams_notification(notification, is_critical=is_critical_ticket)
                         
