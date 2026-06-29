@@ -213,7 +213,7 @@ def parse_employee_info(full_text, subject):
         'ticket_id': ticket_id
     }
 
-def extract_report_data(full_text, subject):
+def extract_report_data(full_text, subject, received_date=None):
     """Вызывается для каждого письма, чтобы наполнить еженедельный отчет."""
     info = parse_employee_info(full_text, subject)
     if not info:
@@ -221,6 +221,11 @@ def extract_report_data(full_text, subject):
 
     d = load_report()
     name = info.pop('name')
+    
+    # Используем фактическую дату получения письма (дату закрытия задачи)
+    if received_date:
+        info['date'] = received_date.strftime('%Y-%m-%d')
+        
     if name not in d:
         d[name] = info
         save_report(d)
@@ -310,8 +315,13 @@ def send_adaptive_card_with_mentions(text, mention_key, is_critical=False, webho
     # Ищем список людей по ключу (город или страна)
     responsibles = LOCATION_RESPONSIBLES.get(mention_key.lower(), [])
     
-    # Если по ключу никого нет, ничего не шлем или шлем без тегов
-    if not responsibles:
+    # Проверка на выходные (суббота - 5, воскресенье - 6)
+    is_weekend = datetime.now().weekday() >= 5
+
+    # Если по ключу никого нет или сейчас выходные, шлем без тегов
+    if not responsibles or is_weekend:
+        if is_weekend and responsibles:
+            logger.info("Выходной день: теги сотрудников пропущены.")
         send_teams_notification(text, is_critical=is_critical, webhook_url=webhook_url)
         return
     
@@ -320,6 +330,10 @@ def send_adaptive_card_with_mentions(text, mention_key, is_critical=False, webho
     entities = []
     
     for resp in responsibles:
+        # Проверяем доступность сотрудника (в отпуске или оффлайн)
+        if not is_user_available(resp['email']):
+            continue
+
         at_text = f"<at>{resp['name']}</at>"
         mention_text += f"{at_text} "
         entities.append({
@@ -400,6 +414,56 @@ def authenticate_outlook():
         print("Авторизация успешна!")
     
     return account
+
+def get_graph_access_token():
+    """Получает access token для Microsoft Graph API через Application Permissions."""
+    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    payload = {
+        'client_id': CLIENT_ID,
+        'scope': 'https://graph.microsoft.com/.default',
+        'client_secret': CLIENT_SECRET,
+        'grant_type': 'client_credentials'
+    }
+    try:
+        response = requests.post(url, data=payload, timeout=10)
+        response.raise_for_status()
+        return response.json().get('access_token')
+    except Exception as e:
+        logger.error(f"Ошибка получения токена Graph API: {e}")
+        return None
+
+def is_user_available(email):
+    """Проверяет статус присутствия пользователя в Teams."""
+    token = get_graph_access_token()
+    if not token:
+        return True # По умолчанию считаем доступным, если не смогли проверить
+        
+    url = f"https://graph.microsoft.com/v1.0/users/{email}/presence"
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json'
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 403:
+            # Ошибка прав (Admin Consent еще не дан)
+            logger.warning(f"Нет прав для проверки статуса {email} (Presence.Read.All)")
+            return True
+        response.raise_for_status()
+        data = response.json()
+        
+        availability = data.get('availability', 'Available')
+        activity = data.get('activity', 'Available')
+        
+        # Если статус "В отпуске" или "Оффлайн", считаем недоступным
+        if availability == 'Offline' or activity == 'OutOfOffice':
+            logger.info(f"Сотрудник {email} недоступен (Status: {availability}, Activity: {activity})")
+            return False
+            
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при проверке статуса {email}: {e}")
+        return True # В любой непонятной ситуации тегаем на всякий случай
 
 def cleanup_html(html_str):
     # Удаляем html теги для поиска по чистому тексту
@@ -504,11 +568,16 @@ def parse_ticket(subject, body, country_tag=""):
     
     # Игнорируем письма о решении/закрытии/обновлении (для всех типов, включая INC и RITM)
     ignore_keywords = [
-        "has been closed", "has been resolved", "withdrawn", 
+        "has been closed", "has been resolved", "resolved", "closed", "withdrawn", 
         "has been suspended", "has been updated", "has a new comment",
-        "comment has been added", "has been put on hold"
+        "comment has been added", "has been put on hold",
+        "new profile request" # Игнорируем родительский запрос NPR, так как придет "Prepare workstation"
     ]
     if any(kw in subject.lower() for kw in ignore_keywords):
+        return 'IGNORE'
+    
+    # Проверка статуса в теле письма
+    if re.search(r'Status:\s*(Resolved|Closed|Completed)', clean_body, re.IGNORECASE):
         return 'IGNORE'
         
     # Если это SLA уведомление, это нам нужно
@@ -532,7 +601,7 @@ def parse_ticket(subject, body, country_tag=""):
     clean_body = cleanup_html(body)
     
     # 5. Достаем поля
-    stop_words = r'(?:Service\s*:|Description\s*:|Priority\s*:|Service Recipient\s*:|SLA Target Date\s*:|Location\s*:|Request Details|Comments:|Ref:|This is an automatically|$)'
+    stop_words = r'(?:Service\s*:|Status\s*:|Description\s*:|Priority\s*:|Service Recipient\s*:|SLA Target Date\s*:|Location\s*:|Request Details|Comments:|Ref:|This is an automatically|$)'
     
     title_match = re.search(r'Title:\s*(.*?)' + stop_words, clean_body, re.IGNORECASE)
     title = title_match.group(1).strip() if title_match else "Нет заголовка"
@@ -625,7 +694,7 @@ def test_report_logic():
             is_npr = "NPR" in full_text and "Prepare workstation" in full_text
             is_er = "ER" in full_text and ("Dismount" in full_text or "Exit" in full_text)
             
-            extract_report_data(full_text, subject)
+            extract_report_data(full_text, subject, received_date=message.received)
     
     print("\nГенерация отчета...")
     send_weekly_report()
@@ -744,8 +813,8 @@ def main():
                         clean_msg_body = cleanup_html(message.body)
                         full_text = subject + " " + clean_msg_body
                         
-                        # Собираем данные для отчета ВСЕГДА, даже если письмо потом уйдет в IGNORE (например, это сообщение о закрытии "has been resolved")
-                        extract_report_data(clean_msg_body, subject)
+                        # Собираем данные для отчета ВСЕГДА, даже если письмо потом уйдет в IGNORE
+                        extract_report_data(full_text, subject, received_date=message.received)
                         
                         # Определяем метку страны по получателю
                         country_tag = ""
@@ -775,7 +844,8 @@ def main():
                             t_id = ticket_match.group(1) if ticket_match else "Unknown ID"
 
                             if ticket_match:
-                                if t_id in notified_tickets:
+                                # Разрешаем дубликаты для критических уведомлений (SLA, Priority 1)
+                                if t_id in notified_tickets and not is_critical_ticket:
                                     logger.info(f"Дубликат тикета пропущен: {t_id}")
                                     processed_emails.add(message.object_id)
                                     continue
