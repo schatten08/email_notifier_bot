@@ -477,49 +477,54 @@ def cleanup_html(html_str):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-def parse_ticket(subject, body, country_tag=""):
+def parse_ticket(subject, body, country_tag="", is_middle_east=False):
     clean_body = cleanup_html(body)
     
     # --- ГЛОБАЛЬНЫЙ ФИЛЬТР ПО ЛОКАЦИИ ---
-    # Мы обрабатываем только Казахстан, Узбекистан и Кыргызстан
-    allowed_countries = ["kazakhstan", "uzbekistan", "kyrgyzstan", "казахстан", "узбекистан", "кыргызстан"]
-    
-    # 1. Ищем локацию в теле письма
-    # Регулярка для быстрого поиска локации (избегаем захвата всего текста до конца письма)
-    loc_search = re.search(r'Location:\s*(.*?)(?:\s{2,}|Title:|Alert:|IP:|Status:|\n|$)', clean_body, re.IGNORECASE)
-    found_location = loc_search.group(1).lower() if loc_search else ""
-    
-    # 2. Проверяем: если локация найдена, должна быть из нашего списка
-    mention_key = None
-    if found_location:
-        # Проверяем города в первую очередь для точного теганья
-        for city in ["almaty", "astana", "karaganda", "tashkent", "bishkek"]:
-            if city in found_location:
-                mention_key = city
-                break
+    # Если это Ближний Восток, мы не фильтруем по локациям СНГ
+    if not is_middle_east:
+        # Мы обрабатываем только Казахстан, Узбекистан и Кыргызстан
+        allowed_countries = ["kazakhstan", "uzbekistan", "kyrgyzstan", "казахстан", "узбекистан", "кыргызстан"]
         
-        # Если город не нашли, проверяем страны
-        if not mention_key:
-            for country in ["kazakhstan", "uzbekistan", "kyrgyzstan", "казахстан", "узбекистан", "кыргызстан"]:
-                if country in found_location:
-                    # Мапим названия на английские ключи
-                    if "казах" in country or "kazakh" in country: mention_key = "kazakhstan"
-                    elif "узбек" in country or "uzbek" in country: mention_key = "uzbekistan"
-                    elif "кыргыз" in country or "kyrgyz" in country: mention_key = "kyrgyzstan"
-                    else: mention_key = country
+        # 1. Ищем локацию в теле письма
+        # Регулярка для быстрого поиска локации (избегаем захвата всего текста до конца письма)
+        loc_search = re.search(r'Location:\s*(.*?)(?:\s{2,}|Title:|Alert:|IP:|Status:|\n|$)', clean_body, re.IGNORECASE)
+        found_location = loc_search.group(1).lower() if loc_search else ""
+        
+        # 2. Проверяем: если локация найдена, должна быть из нашего списка
+        mention_key = None
+        if found_location:
+            # Проверяем города в первую очередь для точного теганья
+            for city in ["almaty", "astana", "karaganda", "tashkent", "bishkek"]:
+                if city in found_location:
+                    mention_key = city
                     break
-        
-        if not mention_key:
-            # Локация есть, но она чужая (например, Saudi Arabia или Russia)
-            return 'IGNORE'
+            
+            # Если город не нашли, проверяем страны
+            if not mention_key:
+                for country in ["kazakhstan", "uzbekistan", "kyrgyzstan", "казахстан", "узбекистан", "кыргызстан"]:
+                    if country in found_location:
+                        # Мапим названия на английские ключи
+                        if "казах" in country or "kazakh" in country: mention_key = "kazakhstan"
+                        elif "узбек" in country or "uzbek" in country: mention_key = "uzbekistan"
+                        elif "кыргыз" in country or "kyrgyz" in country: mention_key = "kyrgyzstan"
+                        else: mention_key = country
+                        break
+            
+            if not mention_key:
+                # Локация есть, но она чужая (например, Saudi Arabia или Russia)
+                return 'IGNORE'
+        else:
+            # 3. Если локации в тексте нет, проверяем по тегу страны (из email получателей)
+            if country_tag:
+                mapping = {"[KZ]": "kazakhstan", "[UZ]": "uzbekistan", "[KG]": "kyrgyzstan"}
+                mention_key = mapping.get(country_tag)
+            
+            if not mention_key:
+                return 'IGNORE'
     else:
-        # 3. Если локации в тексте нет, проверяем по тегу страны (из email получателей)
-        if country_tag:
-            mapping = {"[KZ]": "kazakhstan", "[UZ]": "uzbekistan", "[KG]": "kyrgyzstan"}
-            mention_key = mapping.get(country_tag)
-        
-        if not mention_key:
-            return 'IGNORE'
+        # Для Ближнего Востока mention_key не используем
+        mention_key = None
     # ------------------------------------
 
     # 1. Сначала проверяем на рассылку SolarWinds
@@ -576,6 +581,8 @@ def parse_ticket(subject, body, country_tag=""):
         "has been closed", "has been resolved", "resolved", "closed", "withdrawn", 
         "has been suspended", "has been updated", "has a new comment",
         "comment has been added", "has been put on hold",
+        "has been removed from hold", "no longer on hold", "has been resumed",
+        "снят с удержания", "возобновлен", "снято с удержания",
         "new profile request", # Игнорируем родительский запрос NPR, так как придет "Prepare workstation"
         "incident has been resolved", "request has been resolved"
     ]
@@ -644,7 +651,10 @@ def parse_ticket(subject, body, country_tag=""):
     if is_sla_alert:
         ticket_type = "⏰ ВНИМАНИЕ: Нарушение SLA для"
     
-    tag_str = f" {country_tag}" if country_tag else f" [{mention_key.upper()}]"
+    if is_middle_east:
+        tag_str = ""
+    else:
+        tag_str = f" {country_tag}" if country_tag else (f" [{mention_key.upper()}]" if mention_key else "")
     
     # Формируем итоговое сообщение
     if ticket_url:
@@ -843,7 +853,7 @@ def main():
                             if country_tag: break
 
                         # Пытаемся распарсить тикет
-                        parsed_result = parse_ticket(subject, message.body, country_tag=country_tag)
+                        parsed_result = parse_ticket(subject, message.body, country_tag=country_tag, is_middle_east=is_middle_east)
                         
                         if parsed_result == 'IGNORE':
                             # Это Work Order, пропускаем (но добавляем в обработанные)
