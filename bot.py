@@ -19,6 +19,8 @@ CLIENT_SECRET = os.getenv('CLIENT_SECRET')
 TENANT_ID = os.getenv('TENANT_ID')
 TEAMS_WEBHOOK_URL = os.getenv('TEAMS_WEBHOOK_URL')
 TEAMS_REPORT_WEBHOOK_URL = os.getenv('TEAMS_REPORT_WEBHOOK_URL')
+TEAMS_MIDDLE_EAST_WEBHOOK_URL = os.getenv('TEAMS_MIDDLE_EAST_WEBHOOK_URL')
+MIDDLE_EAST_EMAILS = [email.strip().lower() for email in os.getenv('MIDDLE_EAST_EMAILS', '').split(',') if email.strip()]
 TARGET_EMAIL = os.getenv('TARGET_EMAIL')
 UPTIME_KUMA_PUSH_URL = os.getenv('UPTIME_KUMA_PUSH_URL')
 
@@ -261,7 +263,10 @@ def send_weekly_report():
         grouped[city][info.get('type', 'NPR')].append(entry)
 
     # 1. Заголовок
-    report_msg = "📊 **Weekly Employee Report**\n"
+    today = datetime.now()
+    week_ago = today - timedelta(days=7)
+    date_range = f"({week_ago.strftime('%d %b')} - {today.strftime('%d %b %Y')})"
+    report_msg = f"📊 **Weekly Employee Report** {date_range}\n"
     
     # Сортируем города точно как в скрине (Almaty, Astana, Bishkek, Karaganda, Tashkent)
     CITY_ORDER = ["Almaty", "Astana", "Bishkek", "Karaganda", "Tashkent"]
@@ -571,7 +576,8 @@ def parse_ticket(subject, body, country_tag=""):
         "has been closed", "has been resolved", "resolved", "closed", "withdrawn", 
         "has been suspended", "has been updated", "has a new comment",
         "comment has been added", "has been put on hold",
-        "new profile request" # Игнорируем родительский запрос NPR, так как придет "Prepare workstation"
+        "new profile request", # Игнорируем родительский запрос NPR, так как придет "Prepare workstation"
+        "incident has been resolved", "request has been resolved"
     ]
     if any(kw in subject.lower() for kw in ignore_keywords):
         return 'IGNORE'
@@ -813,8 +819,20 @@ def main():
                         clean_msg_body = cleanup_html(message.body)
                         full_text = subject + " " + clean_msg_body
                         
-                        # Собираем данные для отчета ВСЕГДА, даже если письмо потом уйдет в IGNORE
-                        extract_report_data(full_text, subject, received_date=message.received)
+                        # Проверяем, не относится ли письмо к Ближнему Востоку
+                        is_middle_east = False
+                        if sender.lower() in MIDDLE_EAST_EMAILS:
+                            is_middle_east = True
+                        else:
+                            # Проверяем также получателей
+                            for addr in all_recipients:
+                                if any(me_email in addr for me_email in MIDDLE_EAST_EMAILS):
+                                    is_middle_east = True
+                                    break
+                        
+                        # Собираем данные для отчета ТОЛЬКО если это НЕ Ближний Восток
+                        if not is_middle_east:
+                            extract_report_data(full_text, subject, received_date=message.received)
                         
                         # Определяем метку страны по получателю
                         country_tag = ""
@@ -852,11 +870,15 @@ def main():
                                 notified_tickets.add(t_id)
 
                             logger.info(f"Обработан тикет: {t_id}")
+                            
+                            # Определяем целевой вебхук
+                            current_webhook = TEAMS_MIDDLE_EAST_WEBHOOK_URL if is_middle_east else None
+
                             # Если есть ключ для упоминаний (город или страна), шлем Adaptive Card с тегами
-                            if mention_key:
-                                send_adaptive_card_with_mentions(notification, mention_key, is_critical=is_critical_ticket)
+                            if mention_key and not is_middle_east:
+                                send_adaptive_card_with_mentions(notification, mention_key, is_critical=is_critical_ticket, webhook_url=current_webhook)
                             else:
-                                send_teams_notification(notification, is_critical=is_critical_ticket)
+                                send_teams_notification(notification, is_critical=is_critical_ticket, webhook_url=current_webhook)
                         
                         # Блок для обычных писем удален, так как нужны только RITM, INC и SLA
                     
