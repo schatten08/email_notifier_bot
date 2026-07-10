@@ -20,6 +20,7 @@ TENANT_ID = os.getenv('TENANT_ID')
 TEAMS_WEBHOOK_URL = os.getenv('TEAMS_WEBHOOK_URL')
 TEAMS_REPORT_WEBHOOK_URL = os.getenv('TEAMS_REPORT_WEBHOOK_URL')
 TEAMS_MIDDLE_EAST_WEBHOOK_URL = os.getenv('TEAMS_MIDDLE_EAST_WEBHOOK_URL')
+TEAMS_TIME_REMINDER_WEBHOOK_URL = os.getenv('TEAMS_TIME_REMINDER_WEBHOOK_URL')
 MIDDLE_EAST_EMAILS = [email.strip().lower() for email in os.getenv('MIDDLE_EAST_EMAILS', '').split(',') if email.strip()]
 TARGET_EMAIL = os.getenv('TARGET_EMAIL')
 UPTIME_KUMA_PUSH_URL = os.getenv('UPTIME_KUMA_PUSH_URL')
@@ -33,11 +34,14 @@ start_time = datetime.now()
 emails_checked = 0
 tickets_sent = 0
 REPORT_FILE = "weekly_report.json"
+REPORT_ME_FILE = "weekly_report_me.json"
 CHECKPOINT_FILE = "bot_checkpoint.json"
 
 # Хранилище ID обработанных писем и тикетов
 processed_emails = set()
 notified_tickets = set()
+last_report_date = None
+last_time_reminder_date = None
 
 # Ответственные за локации и города (для тегов в Teams)
 LOCATION_RESPONSIBLES = {
@@ -65,12 +69,15 @@ LOCATION_RESPONSIBLES = {
         {"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"},
         {"name": "Dmitriy Akimov", "email": "dmitriy_akimov@epam.com"}
     ],
+    "middle_east": [
+        {"name": "Pavel Vasilev2", "email": "pavel_vasilev2@epam.com"}
+    ],
     "kazakhstan": []
 }
 
 def load_checkpoint():
     """Загружает ID обработанных писем и тикетов из файла."""
-    global processed_emails, notified_tickets
+    global processed_emails, notified_tickets, last_report_date, last_time_reminder_date
     if os.path.exists(CHECKPOINT_FILE):
         try:
             if os.path.getsize(CHECKPOINT_FILE) == 0:
@@ -80,11 +87,20 @@ def load_checkpoint():
                 data = json.load(f)
                 processed_emails = set(data.get('processed_emails', []))
                 notified_tickets = set(data.get('notified_tickets', []))
+                
+                # Загрузка дат последних отчетов
+                lrd = data.get('last_report_date')
+                if lrd:
+                    last_report_date = datetime.strptime(lrd, '%Y-%m-%d').date()
+                
+                ltrd = data.get('last_time_reminder_date')
+                if ltrd:
+                    last_time_reminder_date = datetime.strptime(ltrd, '%Y-%m-%d').date()
+                    
                 logger.info(f"Чекпоинт загружен: {len(processed_emails)} писем, {len(notified_tickets)} тикетов.")
         except json.JSONDecodeError:
             logger.error(f"Ошибка чтения JSON в {CHECKPOINT_FILE}. Файл будет перезаписан.")
         except Exception as e:
-            logger.error(f"Ошибка при загрузке чекпоинта: {e}")
             logger.error(f"Ошибка при загрузке чекпоинта: {e}")
 
 def save_checkpoint():
@@ -92,35 +108,39 @@ def save_checkpoint():
     try:
         data = {
             'processed_emails': list(processed_emails),
-            'notified_tickets': list(notified_tickets)
+            'notified_tickets': list(notified_tickets),
+            'last_report_date': last_report_date.strftime('%Y-%m-%d') if last_report_date else None,
+            'last_time_reminder_date': last_time_reminder_date.strftime('%Y-%m-%d') if last_time_reminder_date else None
         }
         with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
     except Exception as e:
         logger.error(f"Ошибка при сохранении чекпоинта: {e}")
 
-def load_report():
-    if os.path.exists(REPORT_FILE):
-        if os.path.isdir(REPORT_FILE):
-            logger.error(f"Критическая ошибка: {REPORT_FILE} является директорией!")
+def load_report(is_me=False):
+    target_file = REPORT_ME_FILE if is_me else REPORT_FILE
+    if os.path.exists(target_file):
+        if os.path.isdir(target_file):
+            logger.error(f"Критическая ошибка: {target_file} является директорией!")
             return {}
-        with open(REPORT_FILE, 'r', encoding='utf-8') as f:
+        with open(target_file, 'r', encoding='utf-8') as f:
             try:
                 data = json.load(f)
-                if "npr" in data and isinstance(data["npr"], list):
+                if not is_me and "npr" in data and isinstance(data["npr"], list):
                     return {}
                 return data
             except Exception as e:
-                logger.error(f"Ошибка при чтении отчета: {e}")
+                logger.error(f"Ошибка при чтении отчета {target_file}: {e}")
                 return {}
     return {}
 
-def save_report(data):
+def save_report(data, is_me=False):
+    target_file = REPORT_ME_FILE if is_me else REPORT_FILE
     try:
-        with open(REPORT_FILE, 'w', encoding='utf-8') as f:
+        with open(target_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        logger.error(f"Ошибка при сохранении отчета: {e}")
+        logger.error(f"Ошибка при сохранении отчета {target_file}: {e}")
 
 def parse_employee_info(full_text, subject):
     """
@@ -187,7 +207,14 @@ def parse_employee_info(full_text, subject):
             if c.lower() in t:
                 city = c
                 break
-                
+    
+    # Расширение для Ближнего Востока
+    if not city:
+        for me_c in ['Dubai', 'Abu Dhabi', 'Qatar', 'Doha', 'Saudi Arabia', 'Riyadh', 'Kuwait', 'Oman', 'Muscat', 'Jordan', 'Amman']:
+            if me_c.lower() in full_text.lower():
+                city = me_c
+                break
+
     if not city:
         return None
 
@@ -215,13 +242,13 @@ def parse_employee_info(full_text, subject):
         'ticket_id': ticket_id
     }
 
-def extract_report_data(full_text, subject, received_date=None):
+def extract_report_data(full_text, subject, received_date=None, is_middle_east=False):
     """Вызывается для каждого письма, чтобы наполнить еженедельный отчет."""
     info = parse_employee_info(full_text, subject)
     if not info:
         return
 
-    d = load_report()
+    d = load_report(is_me=is_middle_east)
     name = info.pop('name')
     
     # Используем фактическую дату получения письма (дату закрытия задачи)
@@ -230,13 +257,13 @@ def extract_report_data(full_text, subject, received_date=None):
         
     if name not in d:
         d[name] = info
-        save_report(d)
+        save_report(d, is_me=is_middle_east)
 
 
-def send_weekly_report():
-    data = load_report()
+def send_weekly_report(is_me=False):
+    data = load_report(is_me=is_me)
     if not data:
-        logger.info("Отчет пуст, отправка отменена.")
+        logger.info(f"Отчет {'ME' if is_me else 'CIS'} пуст, отправка отменена.")
         return
 
     # Группируем данные
@@ -266,50 +293,55 @@ def send_weekly_report():
     today = datetime.now()
     week_ago = today - timedelta(days=7)
     date_range = f"({week_ago.strftime('%d %b')} - {today.strftime('%d %b %Y')})"
-    report_msg = f"📊 **Weekly Employee Report** {date_range}\n"
+    prefix = "🌍 **Middle East**" if is_me else "📊 **Weekly**"
+    report_msg = f"{prefix} **Employee Report** {date_range}\n"
     
-    # Сортируем города точно как в скрине (Almaty, Astana, Bishkek, Karaganda, Tashkent)
-    CITY_ORDER = ["Almaty", "Astana", "Bishkek", "Karaganda", "Tashkent"]
-    sorted_cities = [c for c in CITY_ORDER if c in grouped] + sorted([c for c in grouped if c not in CITY_ORDER])
+    # Сортируем города (всегда включаем стандартный список)
+    if is_me:
+        CITY_ORDER = ["Dubai", "Abu Dhabi", "Qatar", "Saudi Arabia", "Kuwait", "Oman", "Jordan"]
+    else:
+        CITY_ORDER = ["Almaty", "Astana", "Bishkek", "Karaganda", "Tashkent"]
+        
+    # Все города из списка + любые новые города, найденные в данных
+    sorted_cities = CITY_ORDER + sorted([c for c in grouped if c not in CITY_ORDER])
     
     # 2. Summary
     report_msg += "Summary:\n"
-    # Сортируем города точно как в скрине (Almaty, Astana, Bishkek, Karaganda, Tashkent)
-    CITY_ORDER = ["Almaty", "Astana", "Bishkek", "Karaganda", "Tashkent"]
     
-    for city in CITY_ORDER:
-        # Берем данные из grouped, если города там нет, ставим нули
+    for city in sorted_cities:
         city_data = grouped.get(city, {'NPR': [], 'ER': []})
         npr_count = len(city_data['NPR'])
         er_count = len(city_data['ER'])
         report_msg += f"• **{city}**: NPR: {npr_count}, ER: {er_count}  \n"
     
-    # Добавляем города, которых нет в CITY_ORDER, но которые есть в данных
-    for city in sorted(grouped.keys()):
-        if city not in CITY_ORDER:
-            npr_count = len(grouped[city]['NPR'])
-            er_count = len(grouped[city]['ER'])
-            report_msg += f"• **{city}**: NPR: {npr_count}, ER: {er_count}  \n"
-    
     report_msg += "\nDetails:\n"
     
     # 3. Details
     for city in sorted_cities:
+        city_data = grouped.get(city, {'NPR': [], 'ER': []})
+        all_people = city_data['NPR'] + city_data['ER']
+        
+        if not all_people:
+            continue
+            
         report_msg += f"📍 **{city}:**\n"
         
         # Сначала NPR, потом ER
-        all_people = grouped[city]['NPR'] + grouped[city]['ER']
         for person_line in all_people:
             report_msg += f"• {person_line}  \n"
         
         report_msg += "\n"
     
-    report_wh = TEAMS_REPORT_WEBHOOK_URL if TEAMS_REPORT_WEBHOOK_URL else TEAMS_WEBHOOK_URL
+    if is_me:
+        report_wh = TEAMS_MIDDLE_EAST_WEBHOOK_URL
+    else:
+        report_wh = TEAMS_REPORT_WEBHOOK_URL if TEAMS_REPORT_WEBHOOK_URL else TEAMS_WEBHOOK_URL
+        
     send_teams_notification(report_msg, webhook_url=report_wh)
     
     # Очищаем отчет после отправки
-    save_report({})
-    logger.info("Еженедельный отчет отправлен и очищен.")
+    save_report({}, is_me=is_me)
+    logger.info(f"Еженедельный отчет {'ME' if is_me else 'CIS'} отправлен и очищен.")
 
 def send_adaptive_card_with_mentions(text, mention_key, is_critical=False, webhook_url=None):
     """Отправляет Adaptive Card с тегами сотрудников на основе ключа локации/города."""
@@ -335,10 +367,6 @@ def send_adaptive_card_with_mentions(text, mention_key, is_critical=False, webho
     entities = []
     
     for resp in responsibles:
-        # Проверяем доступность сотрудника (в отпуске или оффлайн)
-        if not is_user_available(resp['email']):
-            continue
-
         at_text = f"<at>{resp['name']}</at>"
         mention_text += f"{at_text} "
         entities.append({
@@ -420,56 +448,6 @@ def authenticate_outlook():
     
     return account
 
-def get_graph_access_token():
-    """Получает access token для Microsoft Graph API через Application Permissions."""
-    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    payload = {
-        'client_id': CLIENT_ID,
-        'scope': 'https://graph.microsoft.com/.default',
-        'client_secret': CLIENT_SECRET,
-        'grant_type': 'client_credentials'
-    }
-    try:
-        response = requests.post(url, data=payload, timeout=10)
-        response.raise_for_status()
-        return response.json().get('access_token')
-    except Exception as e:
-        logger.error(f"Ошибка получения токена Graph API: {e}")
-        return None
-
-def is_user_available(email):
-    """Проверяет статус присутствия пользователя в Teams."""
-    token = get_graph_access_token()
-    if not token:
-        return True # По умолчанию считаем доступным, если не смогли проверить
-        
-    url = f"https://graph.microsoft.com/v1.0/users/{email}/presence"
-    headers = {
-        'Authorization': f'Bearer {token}',
-        'Content-Type': 'application/json'
-    }
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 403:
-            # Ошибка прав (Admin Consent еще не дан)
-            logger.warning(f"Нет прав для проверки статуса {email} (Presence.Read.All)")
-            return True
-        response.raise_for_status()
-        data = response.json()
-        
-        availability = data.get('availability', 'Available')
-        activity = data.get('activity', 'Available')
-        
-        # Если статус "В отпуске" или "Оффлайн", считаем недоступным
-        if availability == 'Offline' or activity == 'OutOfOffice':
-            logger.info(f"Сотрудник {email} недоступен (Status: {availability}, Activity: {activity})")
-            return False
-            
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при проверке статуса {email}: {e}")
-        return True # В любой непонятной ситуации тегаем на всякий случай
-
 def cleanup_html(html_str):
     # Удаляем html теги для поиска по чистому тексту
     text = re.sub(r'<[^>]+>', ' ', str(html_str))
@@ -529,35 +507,7 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
 
     # 1. Сначала проверяем на рассылку SolarWinds
     if "Alert:" in clean_body and "Status:" in clean_body:
-        alert_match = re.search(r'Alert:\s*(.*?)(?:\s*Location:|\s*IP:|\s*Status:|$)', clean_body)
-        loc_match = re.search(r'Location:\s*(.*?)(?:\s*Alert:|\s*IP:|\s*Status:|$)', clean_body)
-        ip_match = re.search(r'IP:\s*(.*?)(?:\s*Alert:|\s*Location:|\s*Status:|$)', clean_body)
-        status_match = re.search(r'Status:\s*(.*?)(?:\s*Alert:|\s*Location:|\s*IP:|$)', clean_body)
-        
-        alert_val = alert_match.group(1).strip() if alert_match else "Неизвестно"
-        loc_val = loc_match.group(1).strip() if loc_match else "Неизвестно"
-        ip_val = ip_match.group(1).strip() if ip_match else "Неизвестно"
-        status_val = status_match.group(1).strip() if status_match else "Неизвестно"
-        
-        # Выбираем эмодзи по статусу
-        status_icon = "🔴" if "down" in status_val.lower() else ("🟢" if "up" in status_val.lower() else "⚠️")
-        
-        # Для SolarWinds тоже пытаемся уточнить город из loc_val
-        current_mention = mention_key
-        for city in ["almaty", "astana", "karaganda", "tashkent", "bishkek"]:
-            if city in loc_val.lower():
-                current_mention = city
-                break
-
-        tag_display = country_tag if country_tag else f"[{mention_key.upper()}]"
-        msg_sw = f"{status_icon} **Мониторинг SolarWinds** {tag_display}\n\n"
-        msg_sw += f"**Оборудование:** {alert_val}\n"
-        msg_sw += f"**Локация:** {loc_val}\n"
-        msg_sw += f"**IP:** {ip_val}\n"
-        msg_sw += f"**Статус:** {status_val}"
-        
-        is_critical = True if "down" in status_val.lower() else False
-        return msg_sw, is_critical, current_mention
+        return 'IGNORE'
 
     # 2. Фильтрация типов и статусов
     # Для Узбекистана отправляем ТОЛЬКО Инциденты (INC) и SLA уведомления
@@ -582,6 +532,7 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
         "has been suspended", "has been updated", "has a new comment",
         "comment has been added", "has been put on hold",
         "has been removed from hold", "no longer on hold", "has been resumed",
+        "is back at work", "back at work",
         "снят с удержания", "возобновлен", "снято с удержания",
         "new profile request", # Игнорируем родительский запрос NPR, так как придет "Prepare workstation"
         "incident has been resolved", "request has been resolved"
@@ -595,7 +546,10 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
         
     # Если это SLA уведомление, это нам нужно
     is_sla_alert = False
-    if "has reached" in subject.lower() and "sla" in subject.lower():
+    lower_subject = subject.lower()
+    if "sla" in lower_subject and ("reached" in lower_subject or "%" in lower_subject or "violation" in lower_subject):
+        is_sla_alert = True
+    elif "sla" in lower_subject and "has reached" in clean_body.lower():
         is_sla_alert = True
         
     # 3. Ищем номер тикета (INC или RITM)
@@ -649,10 +603,19 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
         ticket_type = "📝 Тикет"
         
     if is_sla_alert:
-        ticket_type = "⏰ ВНИМАНИЕ: Нарушение SLA для"
+        ticket_type = "⏰ **ВНИМАНИЕ: SLA Alert**"
     
     if is_middle_east:
-        tag_str = ""
+        # Пытаемся определить страну для Ближнего Востока из локации
+        me_tag = "[ME]"
+        low_loc = location.lower()
+        if "uae" in low_loc or "dubai" in low_loc or "abu dhabi" in low_loc: me_tag = "[UAE]"
+        elif "qatar" in low_loc or "doha" in low_loc: me_tag = "[QA]"
+        elif "saudi" in low_loc or "riyadh" in low_loc: me_tag = "[SA]"
+        elif "kuwait" in low_loc: me_tag = "[KW]"
+        elif "oman" in low_loc or "muscat" in low_loc: me_tag = "[OM]"
+        elif "jordan" in low_loc or "amman" in low_loc: me_tag = "[JO]"
+        tag_str = f" {me_tag}"
     else:
         tag_str = f" {country_tag}" if country_tag else (f" [{mention_key.upper()}]" if mention_key else "")
     
@@ -681,8 +644,8 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
         
     return msg, is_critical, current_mention
 
-def test_report_logic():
-    print("\n--- ТЕСТ ПАРСИНГА ОТЧЕТА (ВКЛЮЧАЯ СТАРЫЕ ПИСЬМА) ---")
+def test_report_logic(region="cis"):
+    print(f"\n--- ТЕСТ ПАРСИНГА ОТЧЕТА ДЛЯ {region.upper()} ---")
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
     # Берем письма за последние 30 дней для теста
@@ -690,7 +653,10 @@ def test_report_logic():
     limit_date = limit_date.replace(hour=0, minute=0, second=0, microsecond=0)
     account = authenticate_outlook()
     mailbox = account.mailbox()
-    # Берем 500 писем, чтобы точно охватить всю неделю
+    
+    is_me_region = (region.lower() == "me")
+    
+    # Берем 800 писем, чтобы точно охватить всю неделю
     messages = mailbox.get_messages(limit=800, download_attachments=False)
     
     for message in messages:
@@ -699,27 +665,47 @@ def test_report_logic():
             continue
             
         subject = message.subject
-        
         clean_body = cleanup_html(message.body)
         full_text = subject + " " + clean_body
         
-        # Диагностика каждого письма, где упоминается NPR или ER и нужный город
-        if ("NPR" in full_text or "ER" in full_text or "Transformation from Trainee" in full_text):
-            logger.info(f"Диагностика письма (ID задачи в процессе...)")
+        # Проверяем, не относится ли письмо к Ближнему Востоку
+        is_middle_east_msg = False
+        me_keywords = ['uae', 'dubai', 'qatar', 'saudi', 'oman', 'jordan', 'israel', 'kuwait', 'bahrain', 'abu dhabi']
+        
+        # Проверяем отправителя и получателей
+        try:
+            sender_addr = message.sender.address.lower()
+            all_recipients_info = [r.address.lower() for r in message.to]
+            if hasattr(message, 'cc'): all_recipients_info += [r.address.lower() for r in message.cc]
             
-            is_npr = "NPR" in full_text and "Prepare workstation" in full_text
-            is_er = "ER" in full_text and ("Dismount" in full_text or "Exit" in full_text)
-            
-            extract_report_data(full_text, subject, received_date=message.received)
-    
-    print("\nГенерация отчета...")
-    send_weekly_report()
-    print("--- КОНЕЦ ТЕСТА ---\n")
+            if any(me_email in sender_addr for me_email in MIDDLE_EAST_EMAILS):
+                is_middle_east_msg = True
+            else:
+                for info in all_recipients_info:
+                    if any(me_email in info for me_email in MIDDLE_EAST_EMAILS) or any(kw in info for kw in me_keywords):
+                        is_middle_east_msg = True
+                        break
+        except:
+            continue
+        
+        if not is_middle_east_msg:
+            if any(kw in subject.lower() for kw in me_keywords) or any(kw in clean_body.lower() for kw in me_keywords):
+                is_middle_east_msg = True
 
-def heartbeat_worker():
-    if not UPTIME_KUMA_PUSH_URL:
-        return
-    logger.info(f"Запущен поток Heartbeat для Uptime Kuma: {UPTIME_KUMA_PUSH_URL}")
+        # Сюда попадут только письма нужного региона
+        if is_middle_east_msg == is_me_region:
+            if ("NPR" in full_text or "ER" in full_text or "Transformation from Trainee" in full_text):
+                extract_report_data(full_text, subject, received_date=message.received, is_middle_east=is_middle_east_msg)
+    
+    print("\nРезультаты сбора (JSON):")
+    data = load_report(is_me=is_me_region)
+    print(json.dumps(data, indent=4, ensure_ascii=False))
+    
+    if data:
+        print("\nОтправляю тестовый отчет в Teams...")
+        send_weekly_report(is_me=is_me_region)
+    
+    print(f"--- КОНЕЦ ТЕСТА ДЛЯ {region.upper()} ---\n")
     while True:
         try:
             requests.get(UPTIME_KUMA_PUSH_URL, timeout=10)
@@ -727,11 +713,16 @@ def heartbeat_worker():
             logger.error(f"Ошибка отправки heartbeat в Uptime Kuma: {e}")
         time.sleep(50)
 
+def send_heartbeat():
+    if not UPTIME_KUMA_PUSH_URL:
+        return
+    try:
+        requests.get(UPTIME_KUMA_PUSH_URL, timeout=10)
+    except Exception as e:
+        logger.error(f"Ошибка отправки heartbeat в Uptime Kuma: {e}")
+
 def main():
-    global emails_checked, processed_emails, notified_tickets
-    
-    # Запуск мониторинга в фоне
-    threading.Thread(target=heartbeat_worker, daemon=True).start()
+    global emails_checked, processed_emails, notified_tickets, last_report_date, last_time_reminder_date
     
     # 1. Проверка токена
     if not os.path.exists("o365_token.txt"):
@@ -743,18 +734,62 @@ def main():
     account = authenticate_outlook()
     mailbox = account.mailbox()
     
-    # Если база пустая (первый раз запускаем), то помечаем как первый запуск, чтобы не спамить
+    # Помечаем запуск как первый ТОЛЬКО если база полностью пуста
     is_first_run = (len(processed_emails) == 0)
     
-    last_report_date = None
     last_health_check = datetime.now()
     
     logger.info(f"Бот запущен. Состояние: {'Первый запуск' if is_first_run else 'Продолжение работы'}. Проверяю почту...")
     
     while True:
         try:
+            # Плановый перезапуск раз в 12 часов для профилактики "залипания" библиотек
+            if (datetime.now() - start_time).total_seconds() > 43200:
+                logger.info("Плановая перезагрузка бота для обновления соединений...")
+                sys.exit(0)
+
+            # Отправка heartbeat в Uptime Kuma (только если цикл жив)
+            send_heartbeat()
+            
             now_utc = datetime.now(timezone.utc)
             
+            # Напоминание про Time (Пятница 11:00 Киргизия = 05:00 UTC)
+            if now_utc.weekday() == 4 and now_utc.hour >= 5:
+                if last_time_reminder_date != now_utc.date():
+                    if TEAMS_TIME_REMINDER_WEBHOOK_URL:
+                        reminder_msg = "🔔 **Напоминание**: Необходимо заполнить Time по ссылке https://time.epam.com/"
+                        
+                        # Используем AdaptiveCard, так как он подтвержден пользователем
+                        payload = {
+                            "type": "message",
+                            "attachments": [
+                                {
+                                    "contentType": "application/vnd.microsoft.card.adaptive",
+                                    "content": {
+                                        "type": "AdaptiveCard",
+                                        "body": [
+                                            {
+                                                "type": "TextBlock",
+                                                "text": reminder_msg,
+                                                "wrap": True
+                                            }
+                                        ],
+                                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                                        "version": "1.0"
+                                    }
+                                }
+                            ]
+                        }
+                        try:
+                            resp = requests.post(TEAMS_TIME_REMINDER_WEBHOOK_URL, json=payload)
+                            resp.raise_for_status()
+                            logger.info("Напоминание про Time отправлено.")
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки напоминания: {e}")
+                            
+                    last_time_reminder_date = now_utc.date()
+                    save_checkpoint()
+
             # Health Check раз в 24 часа
             if (datetime.now() - last_health_check).total_seconds() > 86400:
                 health_msg = f"✅ **Health Check**: Бот работает стабильно.\nПроверено писем с запуска: {emails_checked}\nТикетов в кеше: {len(notified_tickets)}"
@@ -766,14 +801,16 @@ def main():
             monday_start = monday_start.replace(hour=0, minute=0, second=0, microsecond=0)
             
             # Проверяем, наступила ли пятница (4 - это пятница)
-            # 13:00 UTC = 18:00 по Астане (UTC+5)
-            if now_utc.weekday() == 4 and now_utc.hour >= 13:
+            # 12:00 UTC = 18:00 по Бишкеку (UTC+6)
+            if now_utc.weekday() == 4 and now_utc.hour >= 12:
                 if last_report_date != now_utc.date():
-                    send_weekly_report()
+                    send_weekly_report(is_me=False)
+                    send_weekly_report(is_me=True)
                     last_report_date = now_utc.date()
+                    save_checkpoint()
 
-            # Получаем последние 10 писем из папки 'Inbox' (увеличили лимит, чтобы не пропускать)
-            messages = mailbox.get_messages(limit=10, download_attachments=False)
+            # Получаем последние 100 писем из папки 'Inbox' (увеличили лимит, чтобы не пропускать)
+            messages = mailbox.get_messages(limit=100, download_attachments=False)
             
             for message in messages:
                 if message.object_id not in processed_emails:
@@ -795,9 +832,16 @@ def main():
 
                     emails_checked += 1
                     # Фильтрация по получателю
-                    to_addresses = [recipient.address.lower() for recipient in message.to]
-                    cc_addresses = [recipient.address.lower() for recipient in message.cc] if hasattr(message, 'cc') else []
-                    all_recipients = to_addresses + cc_addresses
+                    all_recipients_info = []
+                    for recipient in message.to:
+                        all_recipients_info.append(recipient.address.lower())
+                        if recipient.name:
+                            all_recipients_info.append(recipient.name.lower())
+                    if hasattr(message, 'cc'):
+                        for recipient in message.cc:
+                            all_recipients_info.append(recipient.address.lower())
+                            if recipient.name:
+                                all_recipients_info.append(recipient.name.lower())
 
                     # Если это первый запуск, просто помечаем как обработанные
                     if is_first_run:
@@ -829,27 +873,36 @@ def main():
                         clean_msg_body = cleanup_html(message.body)
                         full_text = subject + " " + clean_msg_body
                         
-                        # Проверяем, не относится ли письмо к Ближнему Востоку
+                        # Собираем данные для отчета
                         is_middle_east = False
-                        if sender.lower() in MIDDLE_EAST_EMAILS:
+                        me_keywords = ['uae', 'dubai', 'qatar', 'saudi', 'oman', 'jordan', 'israel', 'kuwait', 'bahrain', 'abu dhabi']
+                        
+                        # 1. По списку email-адресов
+                        if any(me_email in sender.lower() for me_email in MIDDLE_EAST_EMAILS):
                             is_middle_east = True
                         else:
-                            # Проверяем также получателей
-                            for addr in all_recipients:
-                                if any(me_email in addr for me_email in MIDDLE_EAST_EMAILS):
+                            # Проверяем получателей (адреса и имена)
+                            for info in all_recipients_info:
+                                if any(me_email in info for me_email in MIDDLE_EAST_EMAILS) or \
+                                   any(kw in info for kw in me_keywords):
                                     is_middle_east = True
                                     break
                         
-                        # Собираем данные для отчета ТОЛЬКО если это НЕ Ближний Восток
+                        # 2. По теме и всему телу письма (не только поле Location)
                         if not is_middle_east:
-                            extract_report_data(full_text, subject, received_date=message.received)
+                            if any(kw in subject.lower() for kw in me_keywords) or \
+                               any(kw in clean_msg_body.lower() for kw in me_keywords):
+                                is_middle_east = True
                         
-                        # Определяем метку страны по получателю
+                        # Собираем данные для отчета
+                        extract_report_data(full_text, subject, received_date=message.received, is_middle_east=is_middle_east)
+                        
+                        # Определяем метку страны по получателю (только адреса)
                         country_tag = ""
-                        for addr in all_recipients:
-                            if 'uzbekistan' in addr: country_tag = "[UZ]"
-                            elif 'kazakhstan' in addr: country_tag = "[KZ]"
-                            elif 'kyrgyzstan' in addr: country_tag = "[KG]"
+                        for addr_info in all_recipients_info:
+                            if 'uzbekistan' in addr_info: country_tag = "[UZ]"
+                            elif 'kazakhstan' in addr_info: country_tag = "[KZ]"
+                            elif 'kyrgyzstan' in addr_info: country_tag = "[KG]"
                             if country_tag: break
 
                         # Пытаемся распарсить тикет
@@ -866,8 +919,8 @@ def main():
                         if parsed_result:
                             # parse_ticket теперь возвращает кортеж (text, is_critical, mention_key)
                             notification, is_critical_ticket, mention_key = parsed_result
-                            
-                            # Извлекаем ID тикета или оборудования, чтобы проверить, не отправляли ли мы его уже
+
+                            # Извлекаем ID тикета
                             ticket_match = re.search(r'(INC\d+|RITM\d+|EP\w+\.epam\.com)', notification)
                             t_id = ticket_match.group(1) if ticket_match else "Unknown ID"
 
@@ -885,10 +938,14 @@ def main():
                             current_webhook = TEAMS_MIDDLE_EAST_WEBHOOK_URL if is_middle_east else None
 
                             # Если есть ключ для упоминаний (город или страна), шлем Adaptive Card с тегами
-                            if mention_key and not is_middle_east:
+                            if is_middle_east:
+                                send_adaptive_card_with_mentions(notification, "middle_east", is_critical=is_critical_ticket, webhook_url=current_webhook)
+                            elif mention_key:
                                 send_adaptive_card_with_mentions(notification, mention_key, is_critical=is_critical_ticket, webhook_url=current_webhook)
                             else:
                                 send_teams_notification(notification, is_critical=is_critical_ticket, webhook_url=current_webhook)
+                        else:
+                            logger.info(f"Не удалось распарсить письмо: {subject}")
                         
                         # Блок для обычных писем удален, так как нужны только RITM, INC и SLA
                     
@@ -898,11 +955,11 @@ def main():
             if is_first_run:
                 is_first_run = False
             
-            # Ограничиваем размер кеша обработанных писем (увеличили до 500 для надежности)
-            if len(processed_emails) > 500:
-                processed_emails = set(list(processed_emails)[-250:])
-            if len(notified_tickets) > 200:
-                notified_tickets = set(list(notified_tickets)[-100:])
+            # Ограничиваем размер кеша обработанных писем
+            if len(processed_emails) > 1000:
+                processed_emails = set(list(processed_emails)[-500:])
+            if len(notified_tickets) > 1000:
+                notified_tickets = set(list(notified_tickets)[-500:])
             
             # Сохраняем прогресс каждое прохождение цикла
             save_checkpoint()
@@ -915,6 +972,7 @@ def main():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test-report":
-        test_report_logic()
+        region = sys.argv[2] if len(sys.argv) > 2 else "cis"
+        test_report_logic(region=region)
     else:
         main()

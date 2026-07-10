@@ -1,6 +1,24 @@
 # Changelog
 
 All notable changes to the Outlook Telegram/Teams Bot will be documented in this file.
+
+## [1.6.0] - 2026-07-10
+### Added
+- **SLA Alerting**: Improved detection for "Resolution SLA %" and "violation" keywords. These are now marked as high-priority alerts.
+- **Middle East Expansion**: Added location-based tags ([UAE], [QA], [SA], [JO], etc.) and expanded country list (Kuwait, Oman, Jordan).
+- **Cache Scalability**: Increased ticket and email cache to 1000 items to prevent duplicate notifications for older requests.
+
+### Changed
+- **Privacy Hardening**: Removed Presence API checks and User Profile enrichment (Job Title/Manager) to avoid Azure AD permission issues and reduce log noise.
+- **Log Masking**: Added email masking in logs for GDPR compliance.
+
+### Removed
+- **SolarWinds Monitoring**: Disabled SolarWinds equipment alerts for both CIS and Middle East channels to reduce noise.
+
+### Fixed
+- **Filter Refinement**: Added "is back at work" and "new profile request" (parent) exclusions.
+- **Error Handling**: Fixed `AttributeError` when processing SolarWinds alerts without a valid location tag.
+
 ## [1.5.0] - 2026-06-30
 ### Added
 - **Middle East Support**: Added dedicated routing for Middle East tickets (UAE, Qatar, Saudi Arabia) to a separate Teams webhook.

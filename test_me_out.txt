@@ -1,0 +1,36 @@
+
+--- ТЕСТ ПАРСИНГА ОТЧЕТА (ВКЛЮЧАЯ СТАРЫЕ ПИСЬМА) ---
+^CTraceback (most recent call last):
+  File "/app/bot.py", line 918, in <module>
+    test_report_logic()
+  File "/app/bot.py", line 694, in test_report_logic
+    messages = mailbox.get_messages(limit=800, download_attachments=False)
+  File "/usr/local/lib/python3.10/site-packages/O365/mailbox.py", line 486, in get_messages
+    response = self.con.get(url, params=params)
+  File "/usr/local/lib/python3.10/site-packages/O365/connection.py", line 1103, in get
+    return self.oauth_request(url, "get", params=params, **kwargs)
+  File "/usr/local/lib/python3.10/site-packages/O365/connection.py", line 1080, in oauth_request
+    return self._internal_request(
+  File "/usr/local/lib/python3.10/site-packages/O365/connection.py", line 976, in _internal_request
+    response = session_obj.request(method, url, **kwargs)
+  File "/usr/local/lib/python3.10/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/usr/local/lib/python3.10/site-packages/requests/sessions.py", line 827, in send
+    r.content
+  File "/usr/local/lib/python3.10/site-packages/requests/models.py", line 1042, in content
+    self._content = b"".join(self.iter_content(CONTENT_CHUNK_SIZE)) or b""
+  File "/usr/local/lib/python3.10/site-packages/requests/models.py", line 937, in generate
+    yield from self.raw.stream(chunk_size, decode_content=True)
+  File "/usr/local/lib/python3.10/site-packages/urllib3/response.py", line 1260, in stream
+    yield from self.read_chunked(amt, decode_content=decode_content)
+  File "/usr/local/lib/python3.10/site-packages/urllib3/response.py", line 1430, in read_chunked
+    self._update_chunk_length()
+  File "/usr/local/lib/python3.10/site-packages/urllib3/response.py", line 1343, in _update_chunk_length
+    line = self._fp.fp.readline()  # type: ignore[union-attr]
+  File "/usr/local/lib/python3.10/socket.py", line 717, in readinto
+    return self._sock.recv_into(b)
+  File "/usr/local/lib/python3.10/ssl.py", line 1307, in recv_into
+    return self.read(nbytes, buffer)
+  File "/usr/local/lib/python3.10/ssl.py", line 1163, in read
+    return self._sslobj.read(len, buffer)
+KeyboardInterrupt
