@@ -6,6 +6,10 @@ o365_token.txt
 *.log
 bot_log.txt
 weekly_report.json
+weekly_report_me.json
+bot_checkpoint.json.bak
+*_out.txt
+report_*.txt
 
 # Python кэш и артефакты
 __pycache__/

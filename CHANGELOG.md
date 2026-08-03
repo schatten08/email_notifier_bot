@@ -2,6 +2,11 @@
 
 All notable changes to the Outlook Telegram/Teams Bot will be documented in this file.
 
+## [1.7.0] - 2026-08-03
+### Added
+- **Second Time Reminder**: Added an afternoon reminder for Time completion on Fridays (15:00 Bishkek / 09:00 UTC).
+- **Dedicated Heartbeat Thread**: Moved Uptime Kuma push notification to a dedicated background worker thread running every 30 seconds for stable uptime monitoring.
+
 ## [1.6.0] - 2026-07-10
 ### Added
 - **SLA Alerting**: Improved detection for "Resolution SLA %" and "violation" keywords. These are now marked as high-priority alerts.
