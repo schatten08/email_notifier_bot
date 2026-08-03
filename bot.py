@@ -120,13 +120,14 @@ def is_middle_east_message(message, recipients_info, clean_body):
     # 2. По получателям
     for info in recipients_info:
         if any(me_email in info for me_email in MIDDLE_EAST_EMAILS) or \
-           any(kw in info for kw in ME_KEYWORDS):
+           any(re.search(rf'\b{re.escape(kw)}\b', info, re.IGNORECASE) for kw in ME_KEYWORDS):
             return True
             
     # 3. По теме и телу
     lb = clean_body.lower()
     ls = message.subject.lower()
-    if any(kw in ls for kw in ME_KEYWORDS) or any(kw in lb for kw in ME_KEYWORDS):
+    if any(re.search(rf'\b{re.escape(kw)}\b', ls, re.IGNORECASE) for kw in ME_KEYWORDS) or \
+       any(re.search(rf'\b{re.escape(kw)}\b', lb, re.IGNORECASE) for kw in ME_KEYWORDS):
         return True
         
     return False
