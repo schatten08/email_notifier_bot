@@ -35,6 +35,37 @@ CHECKPOINT_FILE = os.path.join(DATA_DIR, "bot_checkpoint.json")
 TOKEN_FILE = os.path.join(DATA_DIR, "o365_token.txt")
 RESPONSIBLES_FILE = os.path.join(DATA_DIR, "responsibles.json")
 
+
+def _migrate_legacy_file(legacy_path, new_path, description):
+    """
+    Одноразовая миграция файла из старого расположения (корень проекта, до
+    перехода на модульную архитектуру в v2.0.0) в новый DATA_DIR.
+
+    Без этой функции, если по какой-то причине новый файл в data/ отсутствует
+    или пуст (например, том/volume был смонтирован в новую пустую директорию),
+    а старый файл в корне проекта всё ещё существует, бот молча стартует "с
+    чистого листа": заново проходит авторизацию или считает текущий запуск
+    "первым запуском" и на бэклоге писем помечает тикеты как уведомлённые
+    БЕЗ реальной отправки в Teams. Так 2026-08-04 были потеряны уведомления
+    по нескольким RITM, включая RITM0002315801 - см. CHANGELOG.
+    """
+    if os.path.exists(new_path):
+        return
+    if not os.path.exists(legacy_path):
+        return
+    try:
+        os.replace(legacy_path, new_path)
+        logger.warning(
+            "Обнаружен legacy-файл %s в корне проекта. Автоматически перенесён в %s. "
+            "Проверьте, что это ожидаемо.", description, new_path
+        )
+    except Exception as e:
+        logger.error("Не удалось перенести legacy-файл %s -> %s: %s", legacy_path, new_path, e)
+
+
+_migrate_legacy_file("o365_token.txt", TOKEN_FILE, "o365_token.txt")
+_migrate_legacy_file("bot_checkpoint.json", CHECKPOINT_FILE, "bot_checkpoint.json")
+
 # Обязательные переменные, без которых бот не сможет авторизоваться в Outlook
 # или отправлять уведомления. Проверяем их сразу при импорте конфига, чтобы
 # получить понятную ошибку при старте, а не непонятный сбой глубоко в O365/requests.

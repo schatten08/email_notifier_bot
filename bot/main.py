@@ -24,6 +24,20 @@ logger = logging.getLogger(__name__)
 
 start_time = datetime.now()
 
+# Если чекпоинт "первого запуска" пуст (is_first_run=True), письма старше этого
+# порога считаются реальным историческим бэклогом и молча добавляются в кэш
+# уведомлённых БЕЗ отправки в Teams (чтобы не заспамить канал старыми тикетами
+# при настоящем первом деплое). Письма моложе порога ВСЕГДА проходят обычную
+# обработку с реальной попыткой отправки, даже если is_first_run=True.
+#
+# Это защита на случай, если is_first_run оказался True не из-за настоящего
+# первого запуска, а из-за случайно потерянного/пустого чекпоинта (например,
+# volume примонтирован в пустую директорию, файл не мигрировал при рефакторинге
+# и т.п.) - тогда свежие тикеты не потеряются молча, даже если сама причина
+# "ложного первого запуска" не будет устранена вовремя.
+# См. инцидент 2026-08-04 (потеряно уведомление по RITM0002315801) в CHANGELOG.
+FIRST_RUN_RECENT_HOURS = 3
+
 def authenticate_outlook():
     credentials = (CLIENT_ID, CLIENT_SECRET)
     token_backend = FileSystemTokenBackend(token_path=DATA_DIR, token_filename='o365_token.txt')
@@ -168,26 +182,44 @@ def main():
                         continue
 
                     if is_first_run:
-                        state.processed_emails.add(message.object_id)
-                        ticket_match = re.search(r'(INC\d+|RITM\d+)', message.subject)
-                        if ticket_match:
-                            state.notified_tickets.add(ticket_match.group(1))
-                        
-                        clean_msg_body = cleanup_html(message.body)
-                        full_text = message.subject + " " + clean_msg_body
-                        
-                        all_rec_info = []
-                        for r in message.to:
-                            all_rec_info.append(r.address.lower())
-                            if r.name: all_rec_info.append(r.name.lower())
-                        if hasattr(message, 'cc'):
-                            for r in message.cc:
+                        try:
+                            is_recent_first_run_email = message.received is not None and (
+                                now_utc - message.received
+                            ).total_seconds() < FIRST_RUN_RECENT_HOURS * 3600
+                        except (TypeError, AttributeError):
+                            is_recent_first_run_email = False
+
+                        if not is_recent_first_run_email:
+                            state.processed_emails.add(message.object_id)
+                            ticket_match = re.search(r'(INC\d+|RITM\d+)', message.subject)
+                            if ticket_match:
+                                logger.info(
+                                    f"[Первый запуск] Тикет {ticket_match.group(1)} (получен {message.received}) "
+                                    f"добавлен в кэш уведомлённых БЕЗ отправки в Teams (это исторический бэклог)."
+                                )
+                                state.notified_tickets.add(ticket_match.group(1))
+
+                            clean_msg_body = cleanup_html(message.body)
+                            full_text = message.subject + " " + clean_msg_body
+
+                            all_rec_info = []
+                            for r in message.to:
                                 all_rec_info.append(r.address.lower())
                                 if r.name: all_rec_info.append(r.name.lower())
+                            if hasattr(message, 'cc'):
+                                for r in message.cc:
+                                    all_rec_info.append(r.address.lower())
+                                    if r.name: all_rec_info.append(r.name.lower())
 
-                        is_me = is_middle_east_message(message, all_rec_info, clean_msg_body)
-                        extract_report_data(full_text, message.subject, received_date=message.received, is_middle_east=is_me)
-                        continue
+                            is_me = is_middle_east_message(message, all_rec_info, clean_msg_body)
+                            extract_report_data(full_text, message.subject, received_date=message.received, is_middle_east=is_me)
+                            continue
+                        else:
+                            logger.warning(
+                                f"[Первый запуск] Письмо получено недавно (< {FIRST_RUN_RECENT_HOURS}ч назад): "
+                                f"'{message.subject}' - обрабатывается как обычное новое письмо "
+                                f"(с реальной отправкой в Teams), а не как исторический бэклог."
+                            )
 
                     state.emails_checked += 1
                     all_recipients_info = []
@@ -201,7 +233,7 @@ def main():
                             if recipient.name:
                                 all_recipients_info.append(recipient.name.lower())
 
-                    if not is_first_run: 
+                    if not is_first_run or is_recent_first_run_email:
                         subject = message.subject
                         
                         if message.object_id in state.processed_emails:
@@ -212,6 +244,7 @@ def main():
                         if quick_match:
                             ticket_id_quick = quick_match.group(1)
                             if ticket_id_quick in state.notified_tickets:
+                                logger.info(f"[Quick dedup] Тикет {ticket_id_quick} уже уведомлён ранее, письмо пропущено: {subject}")
                                 state.processed_emails.add(message.object_id)
                                 continue
 
@@ -243,22 +276,32 @@ def main():
                             ticket_match = re.search(r'(INC\d+|RITM\d+|EP\w+\.epam\.com)', notification)
                             t_id = ticket_match.group(1) if ticket_match else "Unknown ID"
 
-                            if ticket_match:
-                                if t_id in state.notified_tickets and not is_critical_ticket:
-                                    logger.info(f"Дубликат тикета пропущен: {t_id}")
-                                    state.processed_emails.add(message.object_id)
-                                    continue
-                                state.notified_tickets.add(t_id)
+                            if ticket_match and t_id in state.notified_tickets and not is_critical_ticket:
+                                logger.info(f"Дубликат тикета пропущен: {t_id}")
+                                state.processed_emails.add(message.object_id)
+                                continue
 
                             logger.info(f"Обработан тикет: {t_id}")
                             current_webhook = TEAMS_MIDDLE_EAST_WEBHOOK_URL if is_middle_east else None
 
                             if is_middle_east:
-                                send_adaptive_card_with_mentions(notification, "middle_east", is_critical=is_critical_ticket, webhook_url=current_webhook)
+                                sent_ok = send_adaptive_card_with_mentions(notification, "middle_east", is_critical=is_critical_ticket, webhook_url=current_webhook)
                             elif mention_key:
-                                send_adaptive_card_with_mentions(notification, mention_key, is_critical=is_critical_ticket, webhook_url=current_webhook)
+                                sent_ok = send_adaptive_card_with_mentions(notification, mention_key, is_critical=is_critical_ticket, webhook_url=current_webhook)
                             else:
-                                send_teams_notification(notification, is_critical=is_critical_ticket, webhook_url=current_webhook)
+                                sent_ok = send_teams_notification(notification, is_critical=is_critical_ticket, webhook_url=current_webhook)
+
+                            # Помечаем тикет как уведомлённый ТОЛЬКО после подтверждённой успешной
+                            # отправки (или намеренного пропуска в выходной день). Если отправка
+                            # реально провалилась (сеть, невалидный webhook и т.п.), тикет НЕ
+                            # попадает в кэш - бот повторит попытку на следующей итерации (через 60с).
+                            # Раньше тикет помечался ДО отправки, из-за чего неудачные отправки
+                            # молча "терялись навсегда" без единого шанса на повтор.
+                            if ticket_match and sent_ok:
+                                state.notified_tickets.add(t_id)
+                            elif ticket_match and not sent_ok:
+                                logger.warning(f"Отправка уведомления по тикету {t_id} не удалась, попытка будет повторена позже.")
+                                continue
                         else:
                             logger.info(f"Не удалось распарсить письмо: {subject}")
                     
