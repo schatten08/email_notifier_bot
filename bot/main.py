@@ -11,12 +11,13 @@ from O365 import Account, FileSystemTokenBackend
 
 from bot.config import (
     CLIENT_ID, CLIENT_SECRET, TENANT_ID, DATA_DIR, TOKEN_FILE, 
-    TEAMS_TIME_REMINDER_WEBHOOK_URL, UPTIME_KUMA_PUSH_URL, TEAMS_MIDDLE_EAST_WEBHOOK_URL
+    TEAMS_TIME_REMINDER_WEBHOOK_URL, UPTIME_KUMA_PUSH_URL, TEAMS_MIDDLE_EAST_WEBHOOK_URL,
+    validate_required_config
 )
 from bot.storage import state
 from bot.parser import cleanup_html, is_middle_east_message, parse_ticket
 from bot.reports import extract_report_data, send_weekly_report
-from bot.teams import send_teams_notification, send_adaptive_card_with_mentions
+from bot.teams import send_teams_notification, send_adaptive_card_with_mentions, send_time_reminder
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ def heartbeat_worker():
         time.sleep(30)
 
 def test_report_logic(region="cis"):
+    validate_required_config()
     print(f"\n--- ТЕСТ ПАРСИНГА ОТЧЕТА ДЛЯ {region.upper()} ---")
     now = datetime.now(timezone.utc)
     limit_date = now - timedelta(days=7)
@@ -65,7 +67,8 @@ def test_report_logic(region="cis"):
         try:
             if getattr(message, 'received', None) and message.received < limit_date:
                 continue
-        except:
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"Не удалось прочитать дату получения письма, пропускаю: {e}")
             continue
             
         subject = message.subject
@@ -81,8 +84,8 @@ def test_report_logic(region="cis"):
                 for r in message.cc:
                     all_rec_info.append(r.address.lower())
                     if r.name: all_rec_info.append(r.name.lower())
-        except:
-            pass
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"Не удалось прочитать получателей письма: {e}")
 
         is_middle_east_msg = is_middle_east_message(message, all_rec_info, clean_body)
 
@@ -96,6 +99,8 @@ def test_report_logic(region="cis"):
 
 
 def main():
+    validate_required_config()
+
     if not os.path.exists(TOKEN_FILE):
         logger.error(f"Критическая ошибка: Файл o365_token.txt не найден в {DATA_DIR}! Бот не сможет авторизоваться.")
     
@@ -121,55 +126,21 @@ def main():
             
             if now_utc.weekday() == 4 and now_utc.hour >= 5:
                 if state.last_time_reminder_date != now_utc.date():
-                    if TEAMS_TIME_REMINDER_WEBHOOK_URL:
-                        reminder_msg = "<at>everyone</at> 🔔 **Напоминание**: Необходимо заполнить Time по ссылке https://time.epam.com/"
-                        payload = {
-                            "type": "message",
-                            "attachments": [{
-                                "contentType": "application/vnd.microsoft.card.adaptive",
-                                "content": {
-                                    "type": "AdaptiveCard",
-                                    "body": [{"type": "TextBlock", "text": reminder_msg, "wrap": True}],
-                                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                                    "version": "1.0",
-                                    "msteams": {"entities": [{"type": "mention", "text": "<at>everyone</at>", "mentioned": {"id": "everyone", "name": "everyone"}}]}
-                                }
-                            }]
-                        }
-                        try:
-                            resp = requests.post(TEAMS_TIME_REMINDER_WEBHOOK_URL, json=payload, timeout=15)
-                            resp.raise_for_status()
-                            logger.info("Утреннее напоминание про Time отправлено.")
-                        except Exception as e:
-                            logger.error(f"Ошибка отправки утреннего напоминания: {e}")
-                            
+                    send_time_reminder(
+                        TEAMS_TIME_REMINDER_WEBHOOK_URL,
+                        "<at>everyone</at> 🔔 **Напоминание**: Необходимо заполнить Time по ссылке https://time.epam.com/",
+                        "Утреннее напоминание про Time"
+                    )
                     state.last_time_reminder_date = now_utc.date()
                     state.save()
 
             if now_utc.weekday() == 4 and now_utc.hour >= 9:
                 if state.last_afternoon_time_reminder_date != now_utc.date():
-                    if TEAMS_TIME_REMINDER_WEBHOOK_URL:
-                        reminder_msg = "<at>everyone</at> ⏰ **Повторное напоминание**: Пожалуйста, не забудьте заполнить Time до конца дня: https://time.epam.com/"
-                        payload = {
-                            "type": "message",
-                            "attachments": [{
-                                "contentType": "application/vnd.microsoft.card.adaptive",
-                                "content": {
-                                    "type": "AdaptiveCard",
-                                    "body": [{"type": "TextBlock", "text": reminder_msg, "wrap": True}],
-                                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                                    "version": "1.0",
-                                    "msteams": {"entities": [{"type": "mention", "text": "<at>everyone</at>", "mentioned": {"id": "everyone", "name": "everyone"}}]}
-                                }
-                            }]
-                        }
-                        try:
-                            resp = requests.post(TEAMS_TIME_REMINDER_WEBHOOK_URL, json=payload, timeout=15)
-                            resp.raise_for_status()
-                            logger.info("Дневное повторное напоминание про Time отправлено.")
-                        except Exception as e:
-                            logger.error(f"Ошибка отправки дневного напоминания: {e}")
-                            
+                    send_time_reminder(
+                        TEAMS_TIME_REMINDER_WEBHOOK_URL,
+                        "<at>everyone</at> ⏰ **Повторное напоминание**: Пожалуйста, не забудьте заполнить Time до конца дня: https://time.epam.com/",
+                        "Дневное повторное напоминание про Time"
+                    )
                     state.last_afternoon_time_reminder_date = now_utc.date()
                     state.save()
 

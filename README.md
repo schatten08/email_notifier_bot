@@ -44,6 +44,12 @@ docker-compose up --build -d
 2. Запустите бота: `python -m bot.main`
 3. При первом запуске перейдите по ссылке в консоли для авторизации через Microsoft Graph API.
 
+### Тесты
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
 ## 🤖 Структура проекта
 - `bot/` — исходный код пакета бота (config, parser, reports, storage, teams, main).
 - `data/` — директория для хранения токенов (`o365_token.txt`), отчетов и списков ответственных (`responsibles.json`).

@@ -95,3 +95,32 @@ def send_adaptive_card_with_mentions(text, mention_key, is_critical=False, webho
         response.raise_for_status()
     except Exception as e:
         logger.error(f"Ошибка отправки Adaptive Card: {e}")
+
+def send_time_reminder(webhook_url, message_text, log_label):
+    """
+    Отправляет напоминание про заполнение Time всем через <at>everyone</at> Adaptive Card.
+    Используется как для утреннего, так и для дневного напоминания (по пятницам).
+    """
+    if not webhook_url:
+        return
+
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "type": "AdaptiveCard",
+                "body": [{"type": "TextBlock", "text": message_text, "wrap": True}],
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.0",
+                "msteams": {"entities": [{"type": "mention", "text": "<at>everyone</at>", "mentioned": {"id": "everyone", "name": "everyone"}}]}
+            }
+        }]
+    }
+
+    try:
+        resp = requests.post(webhook_url, json=payload, timeout=15)
+        resp.raise_for_status()
+        logger.info(f"{log_label} отправлено.")
+    except Exception as e:
+        logger.error(f"Ошибка отправки напоминания ({log_label}): {e}")

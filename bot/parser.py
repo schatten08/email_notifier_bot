@@ -168,53 +168,58 @@ def parse_employee_info(full_text, subject):
         'ticket_id': ticket_id
     }
 
-def parse_ticket(subject, body, country_tag="", is_middle_east=False):
-    """Парсит письмо, проверяет фильтры и возвращает текст уведомления."""
-    clean_body = cleanup_html(body)
-    
-    if not is_middle_east:
-        allowed_countries = ["kazakhstan", "uzbekistan", "kyrgyzstan", "казахстан", "узбекистан", "кыргызстан"]
-        loc_search = re.search(r'Location:\s*(.*?)(?:\s{2,}|Title:|Alert:|IP:|Status:|\n|$)', clean_body, re.IGNORECASE)
-        found_location = loc_search.group(1).lower() if loc_search else ""
-        
-        mention_key = None
-        if found_location:
-            for city in ["almaty", "astana", "karaganda", "tashkent", "bishkek"]:
-                if city in found_location:
-                    mention_key = city
-                    break
-            
-            if not mention_key:
-                for country in allowed_countries:
-                    if country in found_location:
-                        if "казах" in country or "kazakh" in country: mention_key = "kazakhstan"
-                        elif "узбек" in country or "uzbek" in country: mention_key = "uzbekistan"
-                        elif "кыргыз" in country or "kyrgyz" in country: mention_key = "kyrgyzstan"
-                        else: mention_key = country
-                        break
-            
-            if not mention_key:
-                return 'IGNORE'
-        else:
-            if country_tag:
-                mapping = {"[KZ]": "kazakhstan", "[UZ]": "uzbekistan", "[KG]": "kyrgyzstan"}
-                mention_key = mapping.get(country_tag)
-            if not mention_key:
-                return 'IGNORE'
-    else:
-        mention_key = None
+_CIS_CITIES = ["almaty", "astana", "karaganda", "tashkent", "bishkek"]
+_CIS_COUNTRY_TAG_MAP = {"[KZ]": "kazakhstan", "[UZ]": "uzbekistan", "[KG]": "kyrgyzstan"}
+_STOP_WORDS = r'(?:Service\s*:|Status\s*:|Description\s*:|Priority\s*:|Service Recipient\s*:|SLA Target Date\s*:|Location\s*:|Request Details|Comments:|Ref:|This is an automatically|$)'
 
+
+def _resolve_cis_mention_key(clean_body, country_tag):
+    """
+    Определяет ключ упоминания (город/страна СНГ) на основе поля Location в письме
+    или, если оно отсутствует, на основе тега страны, определенного по получателям.
+    Возвращает None, если письмо не относится ни к одной разрешенной локации СНГ
+    (в этом случае вызывающий код должен проигнорировать письмо).
+    """
+    allowed_countries = ["kazakhstan", "uzbekistan", "kyrgyzstan", "казахстан", "узбекистан", "кыргызстан"]
+    loc_search = re.search(r'Location:\s*(.*?)(?:\s{2,}|Title:|Alert:|IP:|Status:|\n|$)', clean_body, re.IGNORECASE)
+    found_location = loc_search.group(1).lower() if loc_search else ""
+
+    if found_location:
+        for city in _CIS_CITIES:
+            if city in found_location:
+                return city
+
+        for country in allowed_countries:
+            if country in found_location:
+                if "казах" in country or "kazakh" in country:
+                    return "kazakhstan"
+                elif "узбек" in country or "uzbek" in country:
+                    return "uzbekistan"
+                elif "кыргыз" in country or "kyrgyz" in country:
+                    return "kyrgyzstan"
+                return country
+
+        return None
+
+    if country_tag:
+        return _CIS_COUNTRY_TAG_MAP.get(country_tag)
+
+    return None
+
+
+def _should_ignore_ticket(subject, clean_body):
+    """Проверяет все условия, при которых письмо должно быть полностью проигнорировано."""
     if "Alert:" in clean_body and "Status:" in clean_body:
-        return 'IGNORE'
+        return True
 
     if any(kw in subject for kw in ["WO00", "Work Order", "SCTASK"]):
-        return 'IGNORE'
-    
+        return True
+
     if "ZABBIX" in subject.upper() or "Auto_EPM" in subject:
-        return 'IGNORE'
-    
+        return True
+
     ignore_keywords = [
-        "has been closed", "has been resolved", "resolved", "closed", "withdrawn", 
+        "has been closed", "has been resolved", "resolved", "closed", "withdrawn",
         "has been suspended", "has been updated", "has a new comment",
         "comment has been added", "has been put on hold",
         "has been removed from hold", "no longer on hold", "has been resumed",
@@ -224,98 +229,129 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
         "incident has been resolved", "request has been resolved"
     ]
     if any(kw in subject.lower() for kw in ignore_keywords):
-        return 'IGNORE'
-    
+        return True
+
     if re.search(r'Status:\s*(Resolved|Closed|Completed)', clean_body, re.IGNORECASE):
-        return 'IGNORE'
-        
-    is_sla_alert = False
+        return True
+
+    return False
+
+
+def _detect_sla_alert(subject, clean_body):
+    """Определяет, является ли письмо алертом об истечении SLA."""
     lower_subject = subject.lower()
     if "sla" in lower_subject and ("reached" in lower_subject or "%" in lower_subject or "violation" in lower_subject):
-        is_sla_alert = True
-    elif "sla" in lower_subject and "has reached" in clean_body.lower():
-        is_sla_alert = True
-        
+        return True
+    if "sla" in lower_subject and "has reached" in clean_body.lower():
+        return True
+    return False
+
+
+def _extract_ticket_fields(clean_body):
+    """Извлекает title/description/priority/location из очищенного текста письма."""
+    def _extract(pattern):
+        m = re.search(pattern + _STOP_WORDS, clean_body, re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+
+    title = _extract(r'Title:\s*(.*?)') or "Нет заголовка"
+    desc = _extract(r'(?:Description:|Comments:?)\s*(.*?)')
+    priority = _extract(r'Priority:\s*(.*?)')
+    location = _extract(r'Location:\s*(.*?)')
+
+    if len(title) > 80:
+        title = title[:80] + "..."
+    if len(location) > 80:
+        location = location[:80] + "..."
+    if len(priority) > 30:
+        priority = priority[:30] + "..."
+
+    return title, desc, priority, location
+
+
+def _detect_me_tag(location):
+    """Определяет короткий тег страны Ближнего Востока по локации тикета."""
+    low_loc = location.lower()
+    if "uae" in low_loc or "dubai" in low_loc or "abu dhabi" in low_loc:
+        return "[UAE]"
+    elif "qatar" in low_loc or "doha" in low_loc:
+        return "[QA]"
+    elif "saudi" in low_loc or "riyadh" in low_loc:
+        return "[SA]"
+    elif "kuwait" in low_loc:
+        return "[KW]"
+    elif "oman" in low_loc or "muscat" in low_loc:
+        return "[OM]"
+    elif "jordan" in low_loc or "amman" in low_loc:
+        return "[JO]"
+    return "[ME]"
+
+
+def parse_ticket(subject, body, country_tag="", is_middle_east=False):
+    """Парсит письмо, проверяет фильтры и возвращает текст уведомления."""
+    clean_body = cleanup_html(body)
+
+    mention_key = None
+    if not is_middle_east:
+        mention_key = _resolve_cis_mention_key(clean_body, country_tag)
+        if not mention_key:
+            return 'IGNORE'
+
+    if _should_ignore_ticket(subject, clean_body):
+        return 'IGNORE'
+
+    is_sla_alert = _detect_sla_alert(subject, clean_body)
+
     ticket_match = re.search(r'(INC\d+|RITM\d+)', subject)
-    
     if not ticket_match and not is_sla_alert:
         return 'IGNORE'
-        
+
     ticket_id = ticket_match.group(1) if ticket_match else "SLA Alert"
-    
+
     link_match = re.search(fr'href=["\'](https?://[^"\']+)["\'][^>]*>(?:<[^>]+>)*\s*{ticket_id}', str(body), re.IGNORECASE)
     ticket_url = link_match.group(1).replace('&amp;', '&') if link_match else ""
-    
-    clean_body = cleanup_html(body)
-    
-    stop_words = r'(?:Service\s*:|Status\s*:|Description\s*:|Priority\s*:|Service Recipient\s*:|SLA Target Date\s*:|Location\s*:|Request Details|Comments:|Ref:|This is an automatically|$)'
-    
-    title_match = re.search(r'Title:\s*(.*?)' + stop_words, clean_body, re.IGNORECASE)
-    title = title_match.group(1).strip() if title_match else "Нет заголовка"
-    
-    desc_match = re.search(r'(?:Description:|Comments:?)\s*(.*?)' + stop_words, clean_body, re.IGNORECASE)
-    desc = desc_match.group(1).strip() if desc_match else ""
-    
-    priority_match = re.search(r'Priority:\s*(.*?)' + stop_words, clean_body, re.IGNORECASE)
-    priority = priority_match.group(1).strip() if priority_match else ""
-    
-    loc_match = re.search(r'Location:\s*(.*?)' + stop_words, clean_body, re.IGNORECASE)
-    location = loc_match.group(1).strip() if loc_match else ""
-    
+
+    title, desc, priority, location = _extract_ticket_fields(clean_body)
+
     current_mention = mention_key
     if location:
-        for city in ["almaty", "astana", "karaganda", "tashkent", "bishkek"]:
+        for city in _CIS_CITIES:
             if city in location.lower():
                 current_mention = city
                 break
 
-    if len(title) > 80: title = title[:80] + "..."
-    if len(location) > 80: location = location[:80] + "..."
-    if len(priority) > 30: priority = priority[:30] + "..."
-    
     if ticket_id.startswith("INC"):
         ticket_type = "🔴 Инцидент"
     elif ticket_id.startswith("RITM"):
         ticket_type = "🟢 RITM Запрос"
     else:
         ticket_type = "📝 Тикет"
-        
+
     if is_sla_alert:
         ticket_type = "⏰ **ВНИМАНИЕ: SLA Alert**"
-    
+
     if is_middle_east:
-        me_tag = "[ME]"
-        low_loc = location.lower()
-        if "uae" in low_loc or "dubai" in low_loc or "abu dhabi" in low_loc: me_tag = "[UAE]"
-        elif "qatar" in low_loc or "doha" in low_loc: me_tag = "[QA]"
-        elif "saudi" in low_loc or "riyadh" in low_loc: me_tag = "[SA]"
-        elif "kuwait" in low_loc: me_tag = "[KW]"
-        elif "oman" in low_loc or "muscat" in low_loc: me_tag = "[OM]"
-        elif "jordan" in low_loc or "amman" in low_loc: me_tag = "[JO]"
-        tag_str = f" {me_tag}"
+        tag_str = f" {_detect_me_tag(location)}"
     else:
         tag_str = f" {country_tag}" if country_tag else (f" [{mention_key.upper()}]" if mention_key else "")
-    
+
     if ticket_url:
         msg = f"{ticket_type}{tag_str}: [**{ticket_id}**]({ticket_url})\n\n"
     else:
         msg = f"{ticket_type}{tag_str}: **{ticket_id}**\n\n"
-        
+
     msg += f"**Тема:** {title}\n"
-    
-    is_critical = False
-    if is_sla_alert:
-        is_critical = True
-        
+
+    is_critical = is_sla_alert
+
     if priority:
         msg += f"**Приоритет:** {priority}\n"
         if "1" in priority or "critical" in priority.lower():
             is_critical = True
-            
+
     if location:
         msg += f"**Локация:** {location}\n"
     if desc:
         short_desc = desc[:250] + "..." if len(desc) > 250 else desc
         msg += f"\n**Описание:**\n*{short_desc}*"
-        
+
     return msg, is_critical, current_mention
