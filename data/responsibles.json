@@ -1,0 +1,29 @@
+{
+    "uzbekistan": [
+        {"name": "Bogdan Martemyanov", "email": "bogdan_martemyanov@epam.com"}
+    ],
+    "tashkent": [
+        {"name": "Bogdan Martemyanov", "email": "bogdan_martemyanov@epam.com"}
+    ],
+    "kyrgyzstan": [
+        {"name": "Andrei Trokol", "email": "andrei_trokol@epam.com"}
+    ],
+    "bishkek": [
+        {"name": "Andrei Trokol", "email": "andrei_trokol@epam.com"}
+    ],
+    "karaganda": [
+        {"name": "Kuanysh Uvaliyev", "email": "kuanysh_uvaliyev@epam.com"}
+    ],
+    "astana": [
+        {"name": "Denis Sribnyy", "email": "denis_sribnyy@epam.com"}
+    ],
+    "almaty": [
+        {"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"},
+        {"name": "Dmitriy Akimov", "email": "dmitriy_akimov@epam.com"}
+    ],
+    "middle_east": [
+        {"name": "Pavel Vasilev2", "email": "pavel_vasilev2@epam.com"},
+        {"name": "Rasul Gadjiyev", "email": "rasul_gadjiyev@epam.com"}
+    ],
+    "kazakhstan": []
+}

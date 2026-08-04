@@ -2,6 +2,17 @@
 
 All notable changes to the Outlook Telegram/Teams Bot will be documented in this file.
 
+## [2.0.0] - 2026-08-04
+### Added
+- **Dynamic Configuration**: `LOCATION_RESPONSIBLES` are now loaded from a `data/responsibles.json` file. This allows changing notification targets on the fly without needing to rebuild or restart the bot.
+- **Robust HTML Parsing**: Integrated `beautifulsoup4` for HTML cleanup replacing fragile regex-based tag stripping. This solves issues with words concatenating across table cells or complex HTML structures.
+- **Atomic State Saving**: Implemented `.tmp` file atomic saves for JSON state and checkpoints to prevent data loss or corruption during sudden restarts/crashes.
+- **Docker Data Volume**: Consolidated all state storage (tokens, checkpoints, logs, and reports) into a single `data/` volume mount in `docker-compose.yml`.
+
+### Changed
+- **Major Architecture Refactor**: The monolithic `bot.py` has been split into a clean Python package (`bot/`) with dedicated modules (`main.py`, `config.py`, `parser.py`, `reports.py`, `storage.py`, `teams.py`).
+- **Dependencies Pinned**: Exact package versions (e.g., `beautifulsoup4~=4.12.3`, `O365~=2.0.35`) are now pinned in `requirements.txt` for reproducible Docker builds.
+
 ## [1.7.0] - 2026-08-03
 ### Added
 - **Second Time Reminder**: Added an afternoon reminder for Time completion on Fridays (15:00 Bishkek / 09:00 UTC).
