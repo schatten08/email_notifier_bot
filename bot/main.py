@@ -17,7 +17,7 @@ from bot.config import (
 from bot.storage import state
 from bot.parser import cleanup_html, is_middle_east_message, parse_ticket
 from bot.reports import extract_report_data, send_weekly_report
-from bot.teams import send_teams_notification, send_adaptive_card_with_mentions, send_time_reminder
+from bot.teams import send_teams_notification, send_adaptive_card_with_mentions, send_time_reminder, send_plain_message
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -156,6 +156,19 @@ def main():
                         "Дневное повторное напоминание про Time"
                     )
                     state.last_afternoon_time_reminder_date = now_utc.date()
+                    state.save()
+
+            # Вечернее пожелание хорошего вечера и благодарность за работу.
+            # Отправляется в тот же чат, что и напоминания про Time, каждый
+            # будний день (Пн-Пт) в 18:00 по Бишкеку (UTC+6 -> 12:00 UTC).
+            if now_utc.weekday() <= 4 and now_utc.hour >= 12:
+                if state.last_evening_thanks_date != now_utc.date():
+                    send_plain_message(
+                        TEAMS_TIME_REMINDER_WEBHOOK_URL,
+                        "🌇 Спасибо за отличную работу сегодня! Хорошего вечера и приятного отдыха! 🙌",
+                        "Вечернее пожелание"
+                    )
+                    state.last_evening_thanks_date = now_utc.date()
                     state.save()
 
             if (datetime.now() - last_health_check).total_seconds() > 86400:

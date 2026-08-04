@@ -2,6 +2,10 @@
 
 All notable changes to the Outlook Telegram/Teams Bot will be documented in this file.
 
+## [Unreleased]
+### Added
+- **Evening Thanks Message**: Every weekday (Mon-Fri) at 18:00 Bishkek time, the bot sends a short thank-you/have-a-good-evening message to the same channel used for Time reminders.
+
 ## [2.0.0] - 2026-08-04
 ### Added
 - **Dynamic Configuration**: `LOCATION_RESPONSIBLES` are now loaded from a `data/responsibles.json` file. This allows changing notification targets on the fly without needing to rebuild or restart the bot.

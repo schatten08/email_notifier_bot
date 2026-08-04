@@ -47,6 +47,7 @@ class BotState:
         self.last_report_date = None
         self.last_time_reminder_date = None
         self.last_afternoon_time_reminder_date = None
+        self.last_evening_thanks_date = None
         self.emails_checked = 0
         self.tickets_sent = 0
 
@@ -72,7 +73,11 @@ class BotState:
                     latrd = data.get('last_afternoon_time_reminder_date')
                     if latrd:
                         self.last_afternoon_time_reminder_date = datetime.strptime(latrd, '%Y-%m-%d').date()
-                        
+
+                    letd = data.get('last_evening_thanks_date')
+                    if letd:
+                        self.last_evening_thanks_date = datetime.strptime(letd, '%Y-%m-%d').date()
+
                     logger.info(f"Чекпоинт загружен: {len(self.processed_emails)} писем, {len(self.notified_tickets)} тикетов.")
             except json.JSONDecodeError:
                 logger.error(f"Ошибка чтения JSON в {CHECKPOINT_FILE}. Файл будет перезаписан.")
@@ -86,7 +91,8 @@ class BotState:
                 'notified_tickets': self.notified_tickets.to_list(),
                 'last_report_date': self.last_report_date.strftime('%Y-%m-%d') if self.last_report_date else None,
                 'last_time_reminder_date': self.last_time_reminder_date.strftime('%Y-%m-%d') if self.last_time_reminder_date else None,
-                'last_afternoon_time_reminder_date': self.last_afternoon_time_reminder_date.strftime('%Y-%m-%d') if self.last_afternoon_time_reminder_date else None
+                'last_afternoon_time_reminder_date': self.last_afternoon_time_reminder_date.strftime('%Y-%m-%d') if self.last_afternoon_time_reminder_date else None,
+                'last_evening_thanks_date': self.last_evening_thanks_date.strftime('%Y-%m-%d') if self.last_evening_thanks_date else None
             }
             tmp_file = CHECKPOINT_FILE + '.tmp'
             with open(tmp_file, 'w', encoding='utf-8') as f:

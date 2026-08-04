@@ -110,6 +110,29 @@ def send_adaptive_card_with_mentions(text, mention_key, is_critical=False, webho
         logger.error(f"Ошибка отправки Adaptive Card: {e}")
         return False
 
+def send_plain_message(webhook_url, message_text, log_label):
+    """
+    Отправляет простое текстовое сообщение (MessageCard, без тегов/упоминаний)
+    на заданный webhook. Используется, например, для вечернего пожелания
+    хорошего вечера в тот же чат, куда приходят напоминания про Time.
+    """
+    if not webhook_url:
+        return
+
+    payload = {
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "themeColor": "0078D7",
+        "text": message_text
+    }
+
+    try:
+        resp = requests.post(webhook_url, json=payload, timeout=15)
+        resp.raise_for_status()
+        logger.info(f"{log_label} отправлено.")
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения ({log_label}): {e}")
+
 def send_time_reminder(webhook_url, message_text, log_label):
     """
     Отправляет напоминание про заполнение Time всем через <at>everyone</at> Adaptive Card.
