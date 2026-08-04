@@ -23,9 +23,7 @@ jobs:
             cd ~/my_bot/email_notifier_bot
             git fetch origin main
             git reset --hard origin/main
-            # Пересобираем образ и перезапускаем через чистый docker run
-            sudo docker build -t email_notifier_bot_bot .
-            sudo docker rm -f email_notifier_bot || true
-            sudo docker run -d --name email_notifier_bot --restart unless-stopped -v $(pwd):/app -w /app --env-file .env email_notifier_bot_bot python bot.py
+            # Пересобираем образ и перезапускаем через docker-compose
+            sudo docker compose up -d --build
             # Очистка старых образов для экономии места
             sudo docker image prune -f

@@ -27,7 +27,7 @@ def send_teams_notification(text, is_critical=False, webhook_url=None):
     }
     
     try:
-        response = requests.post(target_url, json=payload)
+        response = requests.post(target_url, json=payload, timeout=15)
         response.raise_for_status()
         state.tickets_sent += 1
     except Exception as e:
@@ -91,7 +91,7 @@ def send_adaptive_card_with_mentions(text, mention_key, is_critical=False, webho
     }
     
     try:
-        response = requests.post(target_url, json=payload)
+        response = requests.post(target_url, json=payload, timeout=15)
         response.raise_for_status()
     except Exception as e:
         logger.error(f"Ошибка отправки Adaptive Card: {e}")

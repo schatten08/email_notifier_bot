@@ -137,7 +137,7 @@ def main():
                             }]
                         }
                         try:
-                            resp = requests.post(TEAMS_TIME_REMINDER_WEBHOOK_URL, json=payload)
+                            resp = requests.post(TEAMS_TIME_REMINDER_WEBHOOK_URL, json=payload, timeout=15)
                             resp.raise_for_status()
                             logger.info("Утреннее напоминание про Time отправлено.")
                         except Exception as e:
@@ -164,7 +164,7 @@ def main():
                             }]
                         }
                         try:
-                            resp = requests.post(TEAMS_TIME_REMINDER_WEBHOOK_URL, json=payload)
+                            resp = requests.post(TEAMS_TIME_REMINDER_WEBHOOK_URL, json=payload, timeout=15)
                             resp.raise_for_status()
                             logger.info("Дневное повторное напоминание про Time отправлено.")
                         except Exception as e:
@@ -297,9 +297,9 @@ def main():
                 is_first_run = False
             
             if len(state.processed_emails) > 1000:
-                state.processed_emails = set(list(state.processed_emails)[-500:])
+                state.processed_emails.trim(max_size=1000, keep_last=500)
             if len(state.notified_tickets) > 1000:
-                state.notified_tickets = set(list(state.notified_tickets)[-500:])
+                state.notified_tickets.trim(max_size=1000, keep_last=500)
             
             state.save()
                 

@@ -6,10 +6,44 @@ from bot.config import CHECKPOINT_FILE, REPORT_FILE, REPORT_ME_FILE
 
 logger = logging.getLogger(__name__)
 
+class OrderedIdSet:
+    """
+    Множество с сохранением порядка вставки (на основе dict, который в Python 3.7+
+    гарантирует порядок ключей). В отличие от обычного set, позволяет корректно
+    обрезать кэш, оставляя именно последние по времени добавленные записи,
+    а не случайный набор (что было проблемой при использовании list(set())[-N:]).
+    """
+    def __init__(self, items=None):
+        self._data = dict.fromkeys(items or [])
+
+    def add(self, item):
+        # Переставляем элемент в конец, если он уже был (свежий доступ = свежая позиция)
+        self._data.pop(item, None)
+        self._data[item] = None
+
+    def __contains__(self, item):
+        return item in self._data
+
+    def __len__(self):
+        return len(self._data)
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def trim(self, max_size, keep_last):
+        """Если размер превышает max_size, оставляет только keep_last последних (по времени добавления) элементов."""
+        if len(self._data) > max_size:
+            keys = list(self._data.keys())[-keep_last:]
+            self._data = dict.fromkeys(keys)
+
+    def to_list(self):
+        return list(self._data.keys())
+
+
 class BotState:
     def __init__(self):
-        self.processed_emails = set()
-        self.notified_tickets = set()
+        self.processed_emails = OrderedIdSet()
+        self.notified_tickets = OrderedIdSet()
         self.last_report_date = None
         self.last_time_reminder_date = None
         self.last_afternoon_time_reminder_date = None
@@ -24,8 +58,8 @@ class BotState:
                     return
                 with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.processed_emails = set(data.get('processed_emails', []))
-                    self.notified_tickets = set(data.get('notified_tickets', []))
+                    self.processed_emails = OrderedIdSet(data.get('processed_emails', []))
+                    self.notified_tickets = OrderedIdSet(data.get('notified_tickets', []))
                     
                     lrd = data.get('last_report_date')
                     if lrd:
@@ -48,8 +82,8 @@ class BotState:
     def save(self):
         try:
             data = {
-                'processed_emails': list(self.processed_emails),
-                'notified_tickets': list(self.notified_tickets),
+                'processed_emails': self.processed_emails.to_list(),
+                'notified_tickets': self.notified_tickets.to_list(),
                 'last_report_date': self.last_report_date.strftime('%Y-%m-%d') if self.last_report_date else None,
                 'last_time_reminder_date': self.last_time_reminder_date.strftime('%Y-%m-%d') if self.last_time_reminder_date else None,
                 'last_afternoon_time_reminder_date': self.last_afternoon_time_reminder_date.strftime('%Y-%m-%d') if self.last_afternoon_time_reminder_date else None
