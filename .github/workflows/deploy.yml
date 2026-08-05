@@ -23,9 +23,15 @@ jobs:
             cd ~/my_bot/email_notifier_bot
             git fetch origin main
             git reset --hard origin/main
-            # Пересобираем образ и перезапускаем через docker-compose (v1, docker compose v2 plugin не установлен на сервере)
-            # --force-recreate обязателен: без него docker-compose может оставить старый контейнер
-            # запущенным со старым CMD/entrypoint, даже если образ пересобран (см. инцидент 2026-08-04)
-            sudo docker-compose up -d --build --force-recreate
+            # Пересобираем образ. --force-recreate НЕ используем: в docker-compose v1.29.2
+            # (единственная версия, установленная на сервере, "docker compose" v2 plugin
+            # отсутствует) это флаг ломается с KeyError: 'ContainerConfig' и оставляет
+            # контейнеры в зависшем состоянии с автосгенерированными именами
+            # (например, "7a40f6a77290_email_notifier_bot") - см. инцидент 2026-08-04.
+            # Вместо этого удаляем контейнеры по имени явно, затем поднимаем заново -
+            # это гарантированно подхватывает новый образ/CMD без бага --force-recreate.
+            sudo docker-compose build
+            sudo docker rm -f email_notifier_bot dozzle || true
+            sudo docker-compose up -d
             # Очистка старых образов для экономии места
             sudo docker image prune -f
