@@ -160,12 +160,12 @@ def main():
 
             # Вечернее пожелание хорошего вечера и благодарность за работу.
             # Отправляется в тот же чат, что и напоминания про Time, каждый
-            # будний день (Пн-Пт) в 18:00 по Бишкеку (UTC+6 -> 12:00 UTC).
-            if now_utc.weekday() <= 4 and now_utc.hour >= 12:
+            # будний день (Пн-Пт) в 19:00 по Бишкеку (UTC+6 -> 13:00 UTC).
+            if now_utc.weekday() <= 4 and now_utc.hour >= 13:
                 if state.last_evening_thanks_date != now_utc.date():
                     send_plain_message(
                         TEAMS_TIME_REMINDER_WEBHOOK_URL,
-                        "🌇 Спасибо за отличную работу сегодня! Хорошего вечера и приятного отдыха! 🙌",
+                        "🌇 Спасибо за отличную работу сегодня! Хорошего вечера и приятного отдыха! 🙌 Пора домой:)",
                         "Вечернее пожелание"
                     )
                     state.last_evening_thanks_date = now_utc.date()
