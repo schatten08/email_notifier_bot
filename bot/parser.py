@@ -286,8 +286,54 @@ def _detect_me_tag(location):
     return "[ME]"
 
 
+def _extract_sla_percent(subject, clean_body):
+    """
+    Извлекает процент исчерпания SLA (например, 85 из "SLA reached 85%"),
+    чтобы показать его в уведомлении отдельным фактом, а не только текстовой пометкой.
+    Возвращает int (0-100) или None, если процент не найден.
+    """
+    m = re.search(r'(\d{1,3})\s*%', subject) or re.search(r'(\d{1,3})\s*%', clean_body)
+    if not m:
+        return None
+    try:
+        value = int(m.group(1))
+    except ValueError:
+        return None
+    return value if 0 <= value <= 100 else None
+
+
+_CIS_CITY_LABELS = {
+    "almaty": "Almaty", "astana": "Astana", "karaganda": "Karaganda",
+    "tashkent": "Tashkent", "bishkek": "Bishkek",
+}
+_CIS_COUNTRY_LABELS = {
+    "kazakhstan": "Kazakhstan", "uzbekistan": "Uzbekistan", "kyrgyzstan": "Kyrgyzstan",
+}
+
+
+def _short_location_label(location, mention_key, is_middle_east):
+    """
+    Возвращает короткое, читаемое название локации (город/страна) для отображения
+    в карточке крупным планом, вместо длинного полного пути вида
+    "Asia - Central and West/Kazakhstan/Almaty/Almaty". Полный путь остаётся
+    доступным по кнопке "Показать полностью" в самой карточке.
+    """
+    if is_middle_east:
+        return _detect_me_tag(location).strip("[]")
+    if mention_key:
+        if mention_key in _CIS_CITY_LABELS:
+            return _CIS_CITY_LABELS[mention_key]
+        if mention_key in _CIS_COUNTRY_LABELS:
+            return _CIS_COUNTRY_LABELS[mention_key]
+    return location or ""
+
+
 def parse_ticket(subject, body, country_tag="", is_middle_east=False):
-    """Парсит письмо, проверяет фильтры и возвращает текст уведомления."""
+    """
+    Парсит письмо, проверяет фильтры и возвращает структурированные данные тикета
+    (dict) для последующего построения Adaptive Card в bot/teams.py, либо строку
+    'IGNORE', если письмо должно быть полностью проигнорировано.
+    """
     clean_body = cleanup_html(body)
 
     mention_key = None
@@ -305,10 +351,21 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
     if not ticket_match and not is_sla_alert:
         return 'IGNORE'
 
-    ticket_id = ticket_match.group(1) if ticket_match else "SLA Alert"
+    # real_ticket_id - настоящий номер тикета (или None, если это "голый" SLA-алерт
+    # без привязки к конкретному INC/RITM). display_id используется только для
+    # отображения в карточке и НЕ используется для дедупликации/кеша, чтобы
+    # несколько разных безномерных SLA-алертов не считались одним и тем же тикетом.
+    real_ticket_id = ticket_match.group(1) if ticket_match else None
+    display_id = real_ticket_id or "SLA Alert"
 
-    link_match = re.search(fr'href=["\'](https?://[^"\']+)["\'][^>]*>(?:<[^>]+>)*\s*{ticket_id}', str(body), re.IGNORECASE)
-    ticket_url = link_match.group(1).replace('&amp;', '&') if link_match else ""
+    ticket_url = ""
+    if real_ticket_id:
+        link_match = re.search(
+            fr'href=["\'](https?://[^"\']+)["\'][^>]*>(?:<[^>]+>)*\s*{real_ticket_id}',
+            str(body), re.IGNORECASE
+        )
+        if link_match:
+            ticket_url = link_match.group(1).replace('&amp;', '&')
 
     title, desc, priority, location = _extract_ticket_fields(clean_body)
 
@@ -319,39 +376,50 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
                 current_mention = city
                 break
 
-    if ticket_id.startswith("INC"):
-        ticket_type = "🔴 Инцидент"
-    elif ticket_id.startswith("RITM"):
-        ticket_type = "🟢 RITM Запрос"
-    else:
-        ticket_type = "📝 Тикет"
-
     if is_sla_alert:
-        ticket_type = "⏰ **ВНИМАНИЕ: SLA Alert**"
+        header_icon, header_label = "⏰", "ВНИМАНИЕ: SLA Alert"
+    elif real_ticket_id and real_ticket_id.startswith("INC"):
+        header_icon, header_label = "🔴", "Инцидент"
+    elif real_ticket_id and real_ticket_id.startswith("RITM"):
+        header_icon, header_label = "🟢", "RITM Запрос"
+    else:
+        header_icon, header_label = "📝", "Тикет"
 
     if is_middle_east:
-        tag_str = f" {_detect_me_tag(location)}"
+        tag_str = _detect_me_tag(location)
     else:
-        tag_str = f" {country_tag}" if country_tag else (f" [{mention_key.upper()}]" if mention_key else "")
+        tag_str = country_tag if country_tag else (f"[{mention_key.upper()}]" if mention_key else "")
 
-    if ticket_url:
-        msg = f"{ticket_type}{tag_str}: [**{ticket_id}**]({ticket_url})\n\n"
-    else:
-        msg = f"{ticket_type}{tag_str}: **{ticket_id}**\n\n"
-
-    msg += f"**Тема:** {title}\n"
-
+    priority_level = None
     is_critical = is_sla_alert
-
     if priority:
-        msg += f"**Приоритет:** {priority}\n"
-        if "1" in priority or "critical" in priority.lower():
+        low_priority = priority.lower()
+        if "1" in priority or "critical" in low_priority:
+            priority_level = "critical"
             is_critical = True
+        elif "2" in priority or "high" in low_priority:
+            priority_level = "high"
+        else:
+            priority_level = "normal"
 
-    if location:
-        msg += f"**Локация:** {location}\n"
-    if desc:
-        short_desc = desc[:250] + "..." if len(desc) > 250 else desc
-        msg += f"\n**Описание:**\n*{short_desc}*"
+    sla_percent = _extract_sla_percent(subject, clean_body) if is_sla_alert else None
+    location_short = _short_location_label(location, current_mention, is_middle_east)
 
-    return msg, is_critical, current_mention
+    return {
+        'ticket_id': real_ticket_id,
+        'display_id': display_id,
+        'ticket_url': ticket_url,
+        'header_icon': header_icon,
+        'header_label': header_label,
+        'tag_str': tag_str,
+        'title': title,
+        'priority': priority,
+        'priority_level': priority_level,
+        'location': location,
+        'location_short': location_short,
+        'description': desc,
+        'is_critical': is_critical,
+        'is_sla_alert': is_sla_alert,
+        'sla_percent': sla_percent,
+        'mention_key': current_mention,
+    }

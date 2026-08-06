@@ -3,7 +3,7 @@ sys.path.insert(0, '/app')
 
 from bot.main import authenticate_outlook
 from bot.parser import cleanup_html, is_middle_east_message, parse_ticket
-from bot.teams import send_teams_notification, send_adaptive_card_with_mentions
+from bot.teams import send_ticket_card
 from bot.config import TEAMS_MIDDLE_EAST_WEBHOOK_URL
 
 TARGET_ID = "RITM0002315801"
@@ -60,19 +60,15 @@ if parsed_result == 'IGNORE' or not parsed_result:
     print("Тикет был бы проигнорирован парсером. Уведомление НЕ отправлено.")
     sys.exit(1)
 
-notification, is_critical_ticket, mention_key = parsed_result
-print("mention_key:", mention_key)
-print("--- NOTIFICATION TEXT ---")
-print(notification)
+ticket = parsed_result
+print("mention_key:", ticket['mention_key'])
+print("--- TICKET DATA ---")
+print(ticket)
 print("--- END ---")
 
 current_webhook = TEAMS_MIDDLE_EAST_WEBHOOK_URL if is_middle_east else None
+effective_mention_key = "middle_east" if is_middle_east else ticket['mention_key']
 
-if is_middle_east:
-    send_adaptive_card_with_mentions(notification, "middle_east", is_critical=is_critical_ticket, webhook_url=current_webhook)
-elif mention_key:
-    send_adaptive_card_with_mentions(notification, mention_key, is_critical=is_critical_ticket, webhook_url=current_webhook)
-else:
-    send_teams_notification(notification, is_critical=is_critical_ticket, webhook_url=current_webhook)
+send_ticket_card(ticket, mention_key=effective_mention_key, webhook_url=current_webhook)
 
 print("Отправлено (или залогирована ошибка выше).")

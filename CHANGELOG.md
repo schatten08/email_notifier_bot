@@ -3,6 +3,18 @@
 All notable changes to the Outlook Telegram/Teams Bot will be documented in this file.
 
 ## [Unreleased]
+### Added
+- **Structured Adaptive Card Notifications**: `parse_ticket()` now returns a structured dict instead of a pre-rendered markdown string. `bot/teams.py` builds a proper Adaptive Card via `build_ticket_card()`/`send_ticket_card()`:
+  - **FactSet** for Priority/Location/SLA % instead of a single wall-of-text `TextBlock`.
+  - **"Open in ServiceNow" button** (`Action.OpenUrl`) instead of an inline markdown link.
+  - **Color-coded header container** (`Container` with `style: attention/warning/good`) based on priority/criticality, replacing the subtle `themeColor` side-stripe.
+  - **SLA percentage extracted** from the subject/body (e.g. "SLA reached 85%") and shown as its own fact, instead of only a generic "⚠️ SLA Alert" label.
+  - **Collapsible long fields**: full location path and long description are hidden behind "Show full path" / "Show full description" toggle buttons (`Action.ToggleVisibility`) instead of always rendering the full text inline.
+- **Multi-responsible mention tests**: Added `tests/test_teams.py` (16 tests) covering card structure, FactSet contents, OpenUrl action, container styling, and mention formatting.
+
+### Fixed
+- **Merged Mentions Bug**: When a location had multiple responsibles (e.g. Almaty: Rustam Baratov + Dmitriy Akimov), their `<at>` tags were concatenated without a separator, rendering as a single confusing name in Teams ("Rustam Baratov Dmitriy Akimov"). Mentions are now explicitly space-joined as separate `<at>` entities.
+
 ### Changed
 - **Evening Thanks Message Time**: Moved from 18:00 to 19:00 Bishkek time, and added "Пора домой:)" to the message text.
 - **CI/CD Migration to GitLab**: Deploy pipeline moved from GitHub Actions (SSH round-trip) to GitLab CI with a self-hosted `gitlab-runner` (shell executor, tag `oracle`) running directly on the production server. Removes the SSH hop entirely — the runner executes `git fetch/reset`, `docker-compose build`, container recreation and image pruning locally. GitHub Actions workflow kept as a manual fallback (`workflow_dispatch` instead of `push` trigger).

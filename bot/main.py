@@ -17,7 +17,7 @@ from bot.config import (
 from bot.storage import state
 from bot.parser import cleanup_html, is_middle_east_message, parse_ticket
 from bot.reports import extract_report_data, send_weekly_report
-from bot.teams import send_teams_notification, send_adaptive_card_with_mentions, send_time_reminder, send_plain_message
+from bot.teams import send_teams_notification, send_ticket_card, send_time_reminder, send_plain_message
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -274,35 +274,26 @@ def main():
                             elif 'kyrgyzstan' in addr_info: country_tag = "[KG]"
                             if country_tag: break
 
-                        parsed_result = parse_ticket(subject, message.body, country_tag=country_tag, is_middle_east=is_middle_east)
-                        
-                        if parsed_result == 'IGNORE':
+                        ticket = parse_ticket(subject, message.body, country_tag=country_tag, is_middle_east=is_middle_east)
+
+                        if ticket == 'IGNORE':
                             state.processed_emails.add(message.object_id)
                             continue
-                            
-                        is_critical_ticket = False
-                        mention_key = None
-                        
-                        if parsed_result:
-                            notification, is_critical_ticket, mention_key = parsed_result
 
-                            ticket_match = re.search(r'(INC\d+|RITM\d+|EP\w+\.epam\.com)', notification)
-                            t_id = ticket_match.group(1) if ticket_match else "Unknown ID"
+                        if ticket:
+                            t_id = ticket['ticket_id']  # None для "голых" SLA-алертов без INC/RITM
+                            mention_key = ticket['mention_key']
 
-                            if ticket_match and t_id in state.notified_tickets and not is_critical_ticket:
+                            if t_id and t_id in state.notified_tickets and not ticket['is_critical']:
                                 logger.info(f"Дубликат тикета пропущен: {t_id}")
                                 state.processed_emails.add(message.object_id)
                                 continue
 
-                            logger.info(f"Обработан тикет: {t_id}")
+                            logger.info(f"Обработан тикет: {t_id or ticket['display_id']}")
                             current_webhook = TEAMS_MIDDLE_EAST_WEBHOOK_URL if is_middle_east else None
+                            effective_mention_key = "middle_east" if is_middle_east else mention_key
 
-                            if is_middle_east:
-                                sent_ok = send_adaptive_card_with_mentions(notification, "middle_east", is_critical=is_critical_ticket, webhook_url=current_webhook)
-                            elif mention_key:
-                                sent_ok = send_adaptive_card_with_mentions(notification, mention_key, is_critical=is_critical_ticket, webhook_url=current_webhook)
-                            else:
-                                sent_ok = send_teams_notification(notification, is_critical=is_critical_ticket, webhook_url=current_webhook)
+                            sent_ok = send_ticket_card(ticket, mention_key=effective_mention_key, webhook_url=current_webhook)
 
                             # Помечаем тикет как уведомлённый ТОЛЬКО после подтверждённой успешной
                             # отправки (или намеренного пропуска в выходной день). Если отправка
@@ -310,9 +301,9 @@ def main():
                             # попадает в кэш - бот повторит попытку на следующей итерации (через 60с).
                             # Раньше тикет помечался ДО отправки, из-за чего неудачные отправки
                             # молча "терялись навсегда" без единого шанса на повтор.
-                            if ticket_match and sent_ok:
+                            if t_id and sent_ok:
                                 state.notified_tickets.add(t_id)
-                            elif ticket_match and not sent_ok:
+                            elif t_id and not sent_ok:
                                 logger.warning(f"Отправка уведомления по тикету {t_id} не удалась, попытка будет повторена позже.")
                                 continue
                         else:

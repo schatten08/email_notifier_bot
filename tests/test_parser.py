@@ -85,13 +85,13 @@ def test_parse_ticket_extracts_fields_for_incident():
     result = parse_ticket(subject, body, country_tag="", is_middle_east=False)
 
     assert result != 'IGNORE'
-    msg, is_critical, mention_key = result
-    assert "INC0012345" in msg
-    assert "Server is down" in msg
-    assert "Almaty" in msg
-    assert "[ALMATY]" in msg
-    assert is_critical is True  # Priority 1 => критично
-    assert mention_key == "almaty"
+    assert result['ticket_id'] == "INC0012345"
+    assert result['title'] == "Server is down"
+    assert result['location'] == "Almaty"
+    assert result['tag_str'] == "[ALMATY]"
+    assert result['is_critical'] is True  # Priority 1 => критично
+    assert result['priority_level'] == "critical"
+    assert result['mention_key'] == "almaty"
 
 
 def test_parse_ticket_ritm_is_not_critical_by_default():
@@ -100,10 +100,9 @@ def test_parse_ticket_ritm_is_not_critical_by_default():
     result = parse_ticket(subject, body, is_middle_east=False)
 
     assert result != 'IGNORE'
-    msg, is_critical, mention_key = result
-    assert "RITM0099" in msg
-    assert is_critical is False
-    assert mention_key == "astana"
+    assert result['ticket_id'] == "RITM0099"
+    assert result['is_critical'] is False
+    assert result['mention_key'] == "astana"
 
 
 def test_parse_ticket_uses_country_tag_when_no_location_field():
@@ -112,9 +111,8 @@ def test_parse_ticket_uses_country_tag_when_no_location_field():
     result = parse_ticket(subject, body, country_tag="[KZ]", is_middle_east=False)
 
     assert result != 'IGNORE'
-    msg, is_critical, mention_key = result
-    assert mention_key == "kazakhstan"
-    assert "[KZ]" in msg
+    assert result['mention_key'] == "kazakhstan"
+    assert result['tag_str'] == "[KZ]"
 
 
 def test_parse_ticket_ignores_when_no_location_and_no_country_tag():
@@ -129,9 +127,32 @@ def test_parse_ticket_sla_alert_marked_critical():
     result = parse_ticket(subject, body, is_middle_east=False)
 
     assert result != 'IGNORE'
-    msg, is_critical, mention_key = result
-    assert "SLA Alert" in msg
-    assert is_critical is True
+    assert result['is_sla_alert'] is True
+    assert result['header_label'] == "ВНИМАНИЕ: SLA Alert"
+    assert result['ticket_id'] == "INC0055"  # ID найден в теме письма
+    assert result['is_critical'] is True
+    assert result['sla_percent'] == 90
+
+
+def test_parse_ticket_sla_alert_without_ticket_id_uses_display_fallback():
+    body = "Title: SLA warning Location: Almaty Status: New Alert reached 75%"
+    subject = "SLA violation reached"  # без INC/RITM в теме
+    result = parse_ticket(subject, body, is_middle_east=False)
+
+    assert result != 'IGNORE'
+    assert result['ticket_id'] is None
+    assert result['display_id'] == "SLA Alert"
+    assert result['sla_percent'] == 75
+
+
+def test_parse_ticket_sla_percent_none_when_not_present():
+    body = "Title: SLA warning Location: Almaty Status: New violation detected"
+    subject = "SLA violation reached for INC0056"
+    result = parse_ticket(subject, body, is_middle_east=False)
+
+    assert result != 'IGNORE'
+    assert result['is_sla_alert'] is True
+    assert result['sla_percent'] is None
 
 
 # --- parse_ticket: Middle East ---
@@ -142,26 +163,38 @@ def test_parse_ticket_middle_east_detects_uae_tag():
     result = parse_ticket(subject, body, is_middle_east=True)
 
     assert result != 'IGNORE'
-    msg, is_critical, mention_key = result
-    assert "[UAE]" in msg
-    assert mention_key is None  # для ME не используется CIS mention_key
+    assert result['tag_str'] == "[UAE]"
+    assert result['mention_key'] is None  # для ME не используется CIS mention_key
 
 
 def test_parse_ticket_middle_east_detects_qatar_tag():
     body = "Title: VPN issue Priority: 2 Location: Doha Description: cannot connect Status: New"
     subject = "RITM0056 request"
-    _, _, _ = None, None, None
     result = parse_ticket(subject, body, is_middle_east=True)
-    msg, _, _ = result
-    assert "[QA]" in msg
+    assert result['tag_str'] == "[QA]"
 
 
 def test_parse_ticket_middle_east_default_tag_when_unknown_location():
     body = "Title: VPN issue Priority: 2 Location: Unknown Place Description: cannot connect Status: New"
     subject = "RITM0057 request"
     result = parse_ticket(subject, body, is_middle_east=True)
-    msg, _, _ = result
-    assert "[ME]" in msg
+    assert result['tag_str'] == "[ME]"
+
+
+# --- parse_ticket: короткая метка локации (для отображения в карточке) ---
+
+def test_parse_ticket_location_short_uses_city_label_for_cis():
+    body = (
+        "Title: New workstation Priority: 3 "
+        "Location: Asia - Central and West/Kazakhstan/Almaty/Almaty "
+        "Description: setup needed Status: New"
+    )
+    subject = "RITM0100 request"
+    result = parse_ticket(subject, body, is_middle_east=False)
+
+    assert result != 'IGNORE'
+    assert result['location_short'] == "Almaty"
+    assert "Asia - Central" in result['location']
 
 
 # --- parse_employee_info ---
