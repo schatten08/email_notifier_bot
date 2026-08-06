@@ -1,9 +1,13 @@
 name: Deploy Bot
 
+# ВНИМАНИЕ: деплой перенесён на GitLab CI (см. .gitlab-ci.yml), который
+# выполняется напрямую на сервере через shell executor (gitlab-runner).
+# GitLab (git@gitlab.com:schatten08-group/email-notifier-bot.git) теперь
+# основной remote на сервере. Этот workflow оставлен только как fallback -
+# запускается вручную через workflow_dispatch, автозапуска на push нет.
+
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   deploy:
