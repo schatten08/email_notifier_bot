@@ -5,7 +5,7 @@ deploy:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
-    - cd ~/my_bot/email_notifier_bot
+    - cd /home/ubuntu/my_bot/email_notifier_bot
     - git fetch origin main
     - git reset --hard "$CI_COMMIT_SHA"
     # Пересобираем образ. --force-recreate НЕ используем: в docker-compose v1.29.2
