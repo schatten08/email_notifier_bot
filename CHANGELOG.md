@@ -3,8 +3,14 @@
 All notable changes to the Outlook Telegram/Teams Bot will be documented in this file.
 
 ## [Unreleased]
+### Changed
+- **CI/CD Migration to GitLab**: Deploy pipeline moved from GitHub Actions (SSH round-trip) to GitLab CI with a self-hosted `gitlab-runner` (shell executor, tag `oracle`) running directly on the production server. Removes the SSH hop entirely — the runner executes `git fetch/reset`, `docker-compose build`, container recreation and image pruning locally. GitHub Actions workflow kept as a manual fallback (`workflow_dispatch` instead of `push` trigger).
+
 ### Added
 - **Evening Thanks Message**: Every weekday (Mon-Fri) at 18:00 Bishkek time, the bot sends a short thank-you/have-a-good-evening message to the same channel used for Time reminders.
+
+### Fixed
+- **SSH Access Recovery**: Restored SSH access to the production server after a `chmod -R` during `gitlab-runner` setup broke OpenSSH `StrictModes` checks on `/home/ubuntu` (`Authentication refused: bad ownership or modes`). Fixed via an OCI rescue instance with the boot volume attached as a secondary block device.
 
 ## [2.0.0] - 2026-08-04
 ### Added
