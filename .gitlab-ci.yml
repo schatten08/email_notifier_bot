@@ -1,7 +1,7 @@
 deploy:
   stage: deploy
   tags:
-    - oracle-arm-server
+    - oracle
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
