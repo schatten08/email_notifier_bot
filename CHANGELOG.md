@@ -13,7 +13,7 @@ All notable changes to the Outlook Telegram/Teams Bot will be documented in this
 - **Multi-responsible mention tests**: Added `tests/test_teams.py` (16 tests) covering card structure, FactSet contents, OpenUrl action, container styling, and mention formatting.
 
 ### Fixed
-- **Merged Mentions Bug**: When a location had multiple responsibles (e.g. Almaty: Rustam Baratov + Dmitriy Akimov), their `<at>` tags were concatenated without a separator, rendering as a single confusing name in Teams ("Rustam Baratov Dmitriy Akimov"). Mentions are now explicitly space-joined as separate `<at>` entities.
+- **Merged Mentions Bug**: When a location had multiple responsibles (e.g. Almaty: Rustam Baratov + Dmitriy Akimov), their `<at>` tags were concatenated without a separator, rendering as a single confusing name in Teams ("Rustam Baratov Dmitriy Akimov"). Mentions are now joined with a line break, so each responsible appears on their own line.
 
 ### Changed
 - **Evening Thanks Message Time**: Moved from 18:00 to 19:00 Bishkek time, and added "Пора домой:)" to the message text.

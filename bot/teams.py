@@ -57,9 +57,10 @@ def send_teams_notification(text, is_critical=False, webhook_url=None):
 
 def _build_mention_entities(mention_key):
     """
-    Строит текст с упоминаниями (<at>Имя</at> <at>Имя2</at>, через пробел -
-    именно так Teams ожидает несколько тегов подряд) и список entities для
-    Adaptive Card на основе списка ответственных за данную локацию.
+    Строит текст с упоминаниями (каждое имя на отдельной строке через "\n" -
+    Adaptive Card TextBlock рендерит перевод строки как реальный line break при
+    wrap: true) и список entities для Adaptive Card на основе списка
+    ответственных за данную локацию.
     Возвращает (mention_text, entities); mention_text - пустая строка, если
     ответственных для этого ключа не найдено.
     """
@@ -81,9 +82,9 @@ def _build_mention_entities(mention_key):
             }
         })
 
-    # Явный пробел между тегами - без него имена нескольких ответственных
+    # Перенос строки между тегами - без него имена нескольких ответственных
     # слипаются друг с другом в отрисованном сообщении Teams.
-    return " ".join(at_tags), entities
+    return "\n".join(at_tags), entities
 
 
 def _fact(title, value):

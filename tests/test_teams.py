@@ -162,7 +162,7 @@ def test_card_skips_description_toggle_for_short_description():
 
 # --- Разделение упоминаний нескольких ответственных ---
 
-def test_mention_entities_join_multiple_names_with_space_separator(monkeypatch):
+def test_mention_entities_join_multiple_names_with_newline_separator(monkeypatch):
     import bot.teams as teams_module
 
     def fake_responsibles():
@@ -178,9 +178,9 @@ def test_mention_entities_join_multiple_names_with_space_separator(monkeypatch):
     mention_text, entities = _build_mention_entities("almaty")
 
     # Раньше теги слипались в одну строку без разделителя ("Rustam Baratov Dmitriy Akimov"
-    # читалось как одно длинное имя). Теперь между тегами явный пробел-разделитель,
+    # читалось как одно длинное имя). Теперь каждое имя - на отдельной строке,
     # а каждое имя - отдельная <at> сущность.
-    assert mention_text == "<at>Rustam Baratov</at> <at>Dmitriy Akimov</at>"
+    assert mention_text == "<at>Rustam Baratov</at>\n<at>Dmitriy Akimov</at>"
     assert len(entities) == 2
     assert entities[0]["mentioned"]["name"] == "Rustam Baratov"
     assert entities[1]["mentioned"]["name"] == "Dmitriy Akimov"
@@ -215,4 +215,4 @@ def test_card_includes_mentions_in_msteams_entities(monkeypatch):
     text_blocks = _find_blocks(card["body"], "TextBlock")
     mention_block_texts = [b["text"] for b in text_blocks if "<at>" in b.get("text", "")]
     assert len(mention_block_texts) == 1
-    assert mention_block_texts[0] == "<at>Rustam Baratov</at> <at>Dmitriy Akimov</at>"
+    assert mention_block_texts[0] == "<at>Rustam Baratov</at>\n<at>Dmitriy Akimov</at>"
