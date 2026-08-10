@@ -50,7 +50,16 @@ def parse_employee_info(full_text, subject):
     # увольнение ещё даже не согласовано. Проверяем только subject (не
     # full_text), т.к. тело реально закрытого письма может содержать
     # цитированный старый текст с этой фразой из переписки.
-    if 'requires approval' in subject.lower():
+    #
+    # "has expired" в subject - это НЕ успешное завершение, а наоборот:
+    # exit-задача (например, "вернуть оборудование") просрочена и не была
+    # выполнена/подтверждена (напоминание вида "Exit Task for X has
+    # expired"). Ключевое слово 'expired' изначально ловило эти письма как
+    # финальные из-за совпадения по 'exit task', что приводило к ложному
+    # попаданию в отчёт сотрудников, чья реальная дата увольнения была задолго
+    # до отчётного окна (например, Nurlykhan Salamatuly, End date 31 Jul, но
+    # напоминание "has expired" пришло 06 Aug).
+    if 'requires approval' in subject.lower() or 'has expired' in subject.lower():
         is_final = False
 
     if not is_final:
@@ -87,9 +96,9 @@ def parse_employee_info(full_text, subject):
     name_patterns = [
         r'Employee Name\s*:?\s*([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
         r'Trainee\s*:\s*([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
+        r'Title:\s*(?:ER|NPR|ReR)?[^()]*\((?:[^)]+)\)\s*\(([^)]+)\)',
         r'Service Recipient\s*:?\s*([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
         r'Exit Task for\s+([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
-        r'Title:\s*(?:ER|NPR|ReR)?[^()]*\((?:[^)]+)\)\s*\(([^)]+)\)',
         r'\(([A-Z][a-z]+\s+[A-Z][a-z]+)\)\s*Dismount',
         r'\(([A-Z][a-z]+\s+[A-Z][a-z]+)\)\s*Create'
     ]

@@ -221,6 +221,21 @@ def test_parse_employee_info_ignores_pending_approval_exit_task():
     assert parse_employee_info(full_text, subject) is None
 
 
+def test_parse_employee_info_ignores_expired_exit_task():
+    """subject содержит 'exit task' и 'has expired' - это просроченное
+    напоминание о невыполненной exit-задаче, а не успешное завершение
+    увольнения. Не должен попадать в отчёт."""
+    subject = "[People] (Kazakhstan: Almaty): Exit Request: Exit Task for Nurlykhan Salamatuly has expired"
+    full_text = (
+        subject + " Dear colleagues, The following Exit Tasks in Exit Request "
+        "for Nurlykhan Salamatuly have expired : Employee has returned "
+        "EPAM-owned hardware Please, review and provide your resolution for "
+        "the tasks to make Exit procedure complete. Request details: "
+        "End date 31-Jul-2026 Country Kazakhstan City Almaty"
+    )
+    assert parse_employee_info(full_text, subject) is None
+
+
 def test_parse_employee_info_extracts_npr_data():
     subject = "NPR (01 Jul 2026) has been resolved"
     full_text = (
@@ -362,3 +377,45 @@ def test_parse_employee_info_child_task_uses_trainee_not_manager_as_recipient():
     assert info['name'] == "Malika Razieva"
     assert info['type'] == "NPR"
     assert info['city'] == "Bishkek"
+
+
+def test_parse_employee_info_npr_title_bracket_name_beats_service_recipient():
+    """NPR-тикет: настоящее имя нового сотрудника указано в Title в скобках
+    'NPR (date) (Name)', а Service Recipient - это тот, кто забрал
+    оборудование от его имени (не сам новый сотрудник). Имя должно браться
+    из Title, а не из Service Recipient."""
+    subject = "Catalog Task SCTASK002464399 has been closed"
+    full_text = (
+        "Catalog Task SCTASK002464399 has been resolved. Closure code "
+        "Successful Closure comment Dear colleagues, The laptop HP "
+        "EliteBook has been provided. Details Catalog Task: "
+        "SCTASK002464399 Title: NPR (03 Aug 2026) (Aruzhan Zhumagazykyzy) "
+        "Prepare workstation for new employee "
+        "Description: Please check Catalog Item user options "
+        "Service Recipient: Yuliya Sergeeva "
+        "Location: Asia - Central and West/Kazakhstan/Almaty"
+    )
+    info = parse_employee_info(full_text, subject)
+    assert info is not None
+    assert info['name'] == "Aruzhan Zhumagazykyzy"
+    assert info['type'] == "NPR"
+    assert info['city'] == "Almaty"
+
+
+def test_parse_employee_info_er_title_bracket_name_beats_service_recipient():
+    """ER child-тикет (Dismount workstation): настоящее имя увольняющегося
+    сотрудника указано в Title в скобках 'ER (date) (Name)', а Service
+    Recipient - тот, кто принял оборудование (не сам увольняющийся)."""
+    subject = "Requested Item RITM0002288350 resolved"
+    full_text = (
+        "Requested Item RITM0002288350 resolved. Title: ER (05 Aug 2026) "
+        "(Daniil Orlov) Dismount user's workstation [Child RITM for Exit "
+        "request] Description: Please check Catalog Item user options "
+        "Service Recipient: Aidar Dauylbay "
+        "Location: Asia - Central and West/Kazakhstan/Almaty"
+    )
+    info = parse_employee_info(full_text, subject)
+    assert info is not None
+    assert info['name'] == "Daniil Orlov"
+    assert info['type'] == "ER"
+    assert info['city'] == "Almaty"
