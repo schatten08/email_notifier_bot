@@ -59,9 +59,6 @@ def parse_employee_info(full_text, subject):
     if not (is_npr or is_er):
         if any(kw in full_text for kw in ['NPR', 'New Profile', 'Prepare workstation']):
             is_npr = True
-        elif 'hardware' in full_text.lower() or 'equipment' in full_text.lower():
-            if not any(kw in full_text.lower() or kw in subject.lower() for kw in ['exit', 'dismount', 'return', 'er (']):
-                is_npr = True
         elif is_trans:
             is_npr = True
 

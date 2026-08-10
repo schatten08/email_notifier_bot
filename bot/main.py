@@ -252,6 +252,23 @@ def main():
                         if message.object_id in state.processed_emails:
                             continue
 
+                        # ВАЖНО: сбор данных для еженедельного отчета (extract_report_data)
+                        # должен выполняться ДО и НЕЗАВИСИМО от "quick dedup" по номеру
+                        # тикета. Один и тот же RITM/INC обычно порождает несколько писем
+                        # (например, "assigned" -> "resolved"), и именно в финальном письме
+                        # "resolved"/"closed" содержатся данные о сотруднике для отчета.
+                        # Раньше extract_report_data вызывался ПОСЛЕ quick dedup, поэтому
+                        # если тикет уже был уведомлён в Teams по первому письму (например,
+                        # "assigned"), финальное письмо "resolved" с данными о новом
+                        # сотруднике полностью пропускалось через continue - отчет молча
+                        # терял запись (инцидент: NPR Malika Razieva не попала в отчет по
+                        # Кыргызстану, хотя письмо пришло вовремя).
+                        clean_msg_body = cleanup_html(message.body)
+                        full_text = subject + " " + clean_msg_body
+
+                        is_middle_east = is_middle_east_message(message, all_recipients_info, clean_msg_body)
+                        extract_report_data(full_text, subject, received_date=message.received, is_middle_east=is_middle_east)
+
                         ticket_id_quick = None
                         quick_match = re.search(r'(INC\d+|RITM\d+)', subject)
                         if quick_match:
@@ -261,12 +278,6 @@ def main():
                                 state.processed_emails.add(message.object_id)
                                 continue
 
-                        clean_msg_body = cleanup_html(message.body)
-                        full_text = subject + " " + clean_msg_body
-                        
-                        is_middle_east = is_middle_east_message(message, all_recipients_info, clean_msg_body)
-                        extract_report_data(full_text, subject, received_date=message.received, is_middle_east=is_middle_east)
-                        
                         country_tag = ""
                         for addr_info in all_recipients_info:
                             if 'uzbekistan' in addr_info: country_tag = "[UZ]"

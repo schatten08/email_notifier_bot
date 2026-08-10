@@ -254,3 +254,71 @@ def test_parse_employee_info_returns_none_without_recognizable_city():
         "Location: Unknown City"
     )
     assert parse_employee_info(full_text, subject) is None
+
+
+# --- parse_employee_info: обычные заявки на оборудование НЕ должны считаться NPR/ER ---
+# Регрессия: "hardware"/"equipment" fallback ошибочно помечал любую резолюцию
+# по обычной заявке на выдачу/возврат оборудования действующему сотруднику как NPR,
+# из-за чего в еженедельный отчет попадали Nurtai Abdyrazakov и Vitali Danichkin
+# (Бишкек), хотя это не были ни новые сотрудники, ни увольнения.
+
+def test_parse_employee_info_ignores_provide_non_standard_hardware():
+    subject = "Requested Item (RITM) RITM0002314037 has been resolved"
+    full_text = (
+        "Requested Item (RITM) RITM0002314037 has been resolved by Andrei Trokol "
+        "with the following resolution: Closure code: Successful "
+        "Closure comment: The laptop Apple MacBook Pro 14 2024 has been provided. "
+        "Title: Provide non-standard hardware "
+        "Description: Please check Catalog Item user options "
+        "Service Recipient: Nurtai Abdyrazakov "
+        "Location: Kyrgyzstan, Bishkek"
+    )
+    assert parse_employee_info(full_text, subject) is None
+
+
+def test_parse_employee_info_ignores_providing_hardware_manual_task():
+    subject = "Catalog Task SCTASK002490595 has been resolved"
+    full_text = (
+        "Catalog Task SCTASK002490595 has been resolved by Andrei Trokol "
+        "with the following resolution: Closure code: Successful "
+        "Closure comment: The laptop Apple MacBook Pro 14 2024 has been provided. "
+        "Title: Providing non-standard hardware manual task "
+        "Description: Please process request manually "
+        "Service Recipient: Vitali Danichkin "
+        "Location: Kyrgyzstan, Bishkek"
+    )
+    assert parse_employee_info(full_text, subject) is None
+
+
+def test_parse_employee_info_ignores_returning_hardware_to_stock():
+    subject = "Catalog Task SCTASK002489903 has been resolved"
+    full_text = (
+        "Catalog Task SCTASK002489903 has been resolved. "
+        "Title: Returning EPAM-owned hardware to stock "
+        "Description: Please check Catalog Item user options "
+        "Service Recipient: Nurtai Abdyrazakov "
+        "Location: Kyrgyzstan, Bishkek"
+    )
+    assert parse_employee_info(full_text, subject) is None
+
+
+def test_parse_employee_info_still_detects_real_transformation_npr():
+    """Настоящий NPR через Transformation from Trainee должен продолжать распознаваться,
+    даже если рядом упоминается 'workstation'/оборудование."""
+    subject = "Requested Item (RITM) RITM0002313719 has been resolved"
+    full_text = (
+        "Requested Item (RITM) RITM0002313719 has been resolved by Andrei Trokol "
+        "with the following resolution: Closure code: Successful "
+        "Closure comment: The laptop HP EliteBook 8 G1i 16 has been provided. "
+        "Title: Transformation from Trainee to Employee or Contractor. "
+        "Trainee: Malika Razieva, effective from 06 Aug 2026 "
+        "Description: Please provide a standard workstation for a Trainee "
+        "transitioning to an Employee or Contractor "
+        "Service Recipient: Malika Razieva "
+        "Location: Kyrgyzstan, Bishkek"
+    )
+    info = parse_employee_info(full_text, subject)
+    assert info is not None
+    assert info['name'] == "Malika Razieva"
+    assert info['type'] == "NPR"
+    assert info['city'] == "Bishkek"
