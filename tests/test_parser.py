@@ -206,6 +206,21 @@ def test_parse_employee_info_returns_none_when_not_final():
     assert parse_employee_info(full_text, subject) is None
 
 
+def test_parse_employee_info_ignores_pending_approval_exit_task():
+    """subject содержит подстроку 'exit task', но это pending-запрос
+    ('requires approval'), а не финальное/согласованное увольнение -
+    не должен попадать в отчёт."""
+    subject = "[People] [AR] (Kazakhstan: Astana): Exit Request: Exit Task for Artur Muratov requires approval"
+    full_text = (
+        subject + " Dear colleagues, Exit Request for Artur Muratov has been "
+        "submitted. The following exit tasks are pending your approval: "
+        "Employee has returned EPAM-owned hardware Please review the Exit "
+        "Request and take necessary actions promptly. Request details: "
+        "Country Kazakhstan City Astana"
+    )
+    assert parse_employee_info(full_text, subject) is None
+
+
 def test_parse_employee_info_extracts_npr_data():
     subject = "NPR (01 Jul 2026) has been resolved"
     full_text = (

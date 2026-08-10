@@ -42,7 +42,17 @@ def parse_employee_info(full_text, subject):
     if not is_final:
         if any(kw in full_text.lower() for kw in ['has been resolved', 'has been closed', 'has been provided', 'successfully provided']):
             is_final = True
-            
+
+    # "requires approval" в subject - это ещё не согласованный запрос (pending
+    # approval), а не финальное событие. Без этой проверки, например, subject
+    # "Exit Task for Artur Muratov requires approval" ложно триггерит
+    # is_final=True из-за подстроки "exit task" в самом названии задачи, хотя
+    # увольнение ещё даже не согласовано. Проверяем только subject (не
+    # full_text), т.к. тело реально закрытого письма может содержать
+    # цитированный старый текст с этой фразой из переписки.
+    if 'requires approval' in subject.lower():
+        is_final = False
+
     if not is_final:
         return None
     
