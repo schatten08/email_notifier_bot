@@ -8,6 +8,38 @@ from bot.teams import send_teams_notification
 
 logger = logging.getLogger(__name__)
 
+# Если реальная дата события (Dismissal Date / Start Date / First Working Day /
+# дата из Title), извлечённая parse_employee_info(), старше даты получения
+# письма больше чем на этот порог - считаем запись "устаревшей" и не добавляем
+# в ТЕКУЩИЙ отчёт. Такое расхождение означает, что административный
+# "child"-тикет (например, возврат оборудования, дозакрытие) пришёл с большим
+# опозданием относительно реального события, которое почти наверняка уже было
+# учтено в ОДНОМ из прошлых, уже отправленных еженедельных отчётов. Раньше
+# такая запись безусловно попадала в текущее отчётное окно с чужой (реальной)
+# датой события, создавая путаницу вида "почему увольнение месяц назад
+# в отчёте этой недели" (инцидент: Maharramov). Порог чуть больше недели, чтобы
+# не отфильтровать легитimные события, случившиеся в начале ТЕКУЩЕЙ отчётной
+# недели (отчёт собирается с понедельника по пятницу).
+STALE_EVENT_DAYS_THRESHOLD = 9
+
+
+def _parse_report_date(raw_date):
+    """
+    Разбирает дату события из info['date'] (форматы: 'YYYY-MM-DD' или
+    'DD Mon YYYY', либо 'Unknown'/None). Возвращает naive datetime или None,
+    если дату не удалось распознать.
+    """
+    if not raw_date or raw_date == 'Unknown':
+        return None
+    raw_date = str(raw_date).strip()
+    for fmt in ('%Y-%m-%d', '%d %b %Y'):
+        try:
+            return datetime.strptime(raw_date, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def extract_report_data(full_text, subject, received_date=None, is_middle_east=False):
     """Вызывается для каждого письма, чтобы наполнить еженедельный отчет."""
     info = parse_employee_info(full_text, subject)
@@ -16,10 +48,29 @@ def extract_report_data(full_text, subject, received_date=None, is_middle_east=F
 
     d = load_report(is_me=is_middle_east)
     name = info.pop('name')
-    
-    if received_date:
+
+    # ВАЖНО: info['date'] уже содержит РЕАЛЬНУЮ дату события, извлечённую
+    # parse_employee_info() из тела письма. Раньше эта дата безусловно
+    # перезатиралась датой ПОЛУЧЕНИЯ письма (received_date), из-за чего отчёт
+    # показывал дату письма вместо даты реального увольнения/выхода.
+    # received_date теперь используется ТОЛЬКО как fallback, если реальную
+    # дату события не удалось извлечь (info['date'] отсутствует/'Unknown').
+    event_date = _parse_report_date(info.get('date'))
+    if event_date is None and received_date:
         info['date'] = received_date.strftime('%Y-%m-%d')
-        
+        event_date = received_date.replace(tzinfo=None) if received_date.tzinfo else received_date
+
+    if event_date and received_date:
+        received_naive = received_date.replace(tzinfo=None) if received_date.tzinfo else received_date
+        if (received_naive - event_date).days > STALE_EVENT_DAYS_THRESHOLD:
+            logger.warning(
+                f"Событие для {name} датировано {info.get('date')}, это больше чем "
+                f"{STALE_EVENT_DAYS_THRESHOLD} дней раньше даты получения письма "
+                f"({received_date}). Вероятно, уже учтено в одном из прошлых отчётов - "
+                f"пропускаю, чтобы не задублировать событие в чужом отчётном окне."
+            )
+            return
+
     if name not in d:
         d[name] = info
         save_report(d, is_me=is_middle_east)
