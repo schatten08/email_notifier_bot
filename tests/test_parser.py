@@ -322,3 +322,28 @@ def test_parse_employee_info_still_detects_real_transformation_npr():
     assert info['name'] == "Malika Razieva"
     assert info['type'] == "NPR"
     assert info['city'] == "Bishkek"
+
+
+def test_parse_employee_info_child_task_uses_trainee_not_manager_as_recipient():
+    """Дочерняя задача (получение оборудования) той же Transformation-заявки:
+    Service Recipient здесь - менеджер, забравший оборудование от имени
+    трансформируемого сотрудника, а не сам сотрудник. Имя должно браться
+    из поля 'Trainee:', а не из 'Service Recipient:'."""
+    subject = "Catalog Task SCTASK002489481 has been resolved"
+    full_text = (
+        "Catalog Task SCTASK002489481 has been resolved by Andrei Trokol "
+        "with the following resolution: Closure code Successful Closure "
+        "comment Dear colleagues, The laptop HP EliteBook 8 G1i 16 "
+        "has been provided. "
+        "Title: Transformation from Trainee to Employee or Contractor. "
+        "Trainee: Malika Razieva, effective from 06 Aug 2026 "
+        "Description: Please provide a standard workstation for a Trainee "
+        "transitioning to an Employee or Contractor "
+        "Service Recipient: Sabina Klimovich "
+        "Location: Kyrgyzstan, Bishkek"
+    )
+    info = parse_employee_info(full_text, subject)
+    assert info is not None
+    assert info['name'] == "Malika Razieva"
+    assert info['type'] == "NPR"
+    assert info['city'] == "Bishkek"
