@@ -128,7 +128,7 @@ def test_parse_ticket_sla_alert_marked_critical():
 
     assert result != 'IGNORE'
     assert result['is_sla_alert'] is True
-    assert result['header_label'] == "ВНИМАНИЕ: SLA Alert"
+    assert result['header_label'] == "WARNING: SLA Alert"
     assert result['ticket_id'] == "INC0055"  # ID найден в теме письма
     assert result['is_critical'] is True
     assert result['sla_percent'] == 90

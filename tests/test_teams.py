@@ -18,7 +18,7 @@ def _base_ticket(**overrides):
         'display_id': "RITM0001234",
         'ticket_url': "https://example.service-now.com/RITM0001234",
         'header_icon': "🟢",
-        'header_label': "RITM Запрос",
+        'header_label': "RITM Request",
         'tag_str': "[ALMATY]",
         'title': "Provide standard workstation",
         'priority': "3 - Average",
@@ -61,19 +61,19 @@ def test_card_includes_factset_with_priority_and_location():
     factsets = _find_blocks(card["body"], "FactSet")
     assert len(factsets) == 1
     facts = {f["title"]: f["value"] for f in factsets[0]["facts"]}
-    assert facts["Приоритет"] == "3 - Average"
-    assert facts["Локация"] == "Almaty"  # короткая метка, а не полный путь
+    assert facts["Priority"] == "3 - Average"
+    assert facts["Location:"] == "Almaty"  # короткая метка, а не полный путь
 
 
 def test_card_includes_sla_percent_fact_when_present():
-    ticket = _base_ticket(is_sla_alert=True, sla_percent=85, header_label="ВНИМАНИЕ: SLA Alert", header_icon="⏰")
+    ticket = _base_ticket(is_sla_alert=True, sla_percent=85, header_label="WARNING: SLA Alert", header_icon="⏰")
     card = build_ticket_card(ticket)
     factsets = _find_blocks(card["body"], "FactSet")
     facts = {f["title"]: f["value"] for f in factsets[0]["facts"]}
-    assert facts["SLA исчерпан"] == "85%"
+    assert facts["SLA reached"] == "85%"
 
 
-# --- Кнопка "Открыть в ServiceNow" ---
+# --- Кнопка "Open in ServiceNow" ---
 
 def test_card_has_open_url_action_when_ticket_url_present():
     card = build_ticket_card(_base_ticket())
@@ -112,27 +112,31 @@ def test_card_header_container_is_warning_style_for_high_priority():
     assert containers[0]["style"] == "warning"
 
 
-# --- Сворачиваемая длинная локация ---
+# --- Локация: только короткая метка, без кнопки полного пути ---
 
-def test_card_adds_toggle_for_long_full_location():
+def test_card_never_shows_location_toggle_even_for_long_full_location():
+    """Кнопка 'Show full location path' убрана полностью - локация в карточке
+    всегда показывается только короткой меткой (город/страна), полный путь
+    нигде не отображается, даже если он длинный."""
     card = build_ticket_card(_base_ticket())
     action_sets = _find_blocks(card["body"], "ActionSet")
     toggle_titles = [
         a["title"] for aset in action_sets for a in aset["actions"]
         if a["type"] == "Action.ToggleVisibility"
     ]
-    assert any("полный путь" in t.lower() for t in toggle_titles)
+    assert not any("location" in t.lower() for t in toggle_titles)
+
+    text_blocks = _find_blocks(card["body"], "TextBlock")
+    full_location = "Asia - Central and West/Kazakhstan/Almaty/Almaty"
+    assert not any(full_location in b.get("text", "") for b in text_blocks)
 
 
-def test_card_skips_location_toggle_when_short_and_full_are_equal():
-    ticket = _base_ticket(location="Almaty", location_short="Almaty")
+def test_card_shows_only_short_location_label_in_factset():
+    ticket = _base_ticket(location="Asia - Central and West/Kazakhstan/Almaty/Almaty", location_short="Almaty")
     card = build_ticket_card(ticket)
-    action_sets = _find_blocks(card["body"], "ActionSet")
-    toggle_titles = [
-        a["title"] for aset in action_sets for a in aset["actions"]
-        if a["type"] == "Action.ToggleVisibility"
-    ]
-    assert not any("полный путь" in t.lower() for t in toggle_titles)
+    factsets = _find_blocks(card["body"], "FactSet")
+    facts = {f["title"]: f["value"] for f in factsets[0]["facts"]}
+    assert facts["Location:"] == "Almaty"
 
 
 # --- Сворачиваемое длинное описание ---
@@ -146,7 +150,7 @@ def test_card_adds_toggle_for_long_description():
         a["title"] for aset in action_sets for a in aset["actions"]
         if a["type"] == "Action.ToggleVisibility"
     ]
-    assert any("описание" in t.lower() for t in toggle_titles)
+    assert any("description" in t.lower() for t in toggle_titles)
 
 
 def test_card_skips_description_toggle_for_short_description():
@@ -157,7 +161,7 @@ def test_card_skips_description_toggle_for_short_description():
         a["title"] for aset in action_sets for a in aset["actions"]
         if a["type"] == "Action.ToggleVisibility"
     ]
-    assert not any("описание" in t.lower() for t in toggle_titles)
+    assert not any("description" in t.lower() for t in toggle_titles)
 
 
 # --- Разделение упоминаний нескольких ответственных ---

@@ -269,7 +269,7 @@ def _extract_ticket_fields(clean_body):
         m = re.search(pattern + _STOP_WORDS, clean_body, re.IGNORECASE)
         return m.group(1).strip() if m else ""
 
-    title = _extract(r'Title:\s*(.*?)') or "Нет заголовка"
+    title = _extract(r'Title:\s*(.*?)') or "No title"
     desc = _extract(r'(?:Description:|Comments:?)\s*(.*?)')
     priority = _extract(r'Priority:\s*(.*?)')
     location = _extract(r'Location:\s*(.*?)')
@@ -393,13 +393,13 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
                 break
 
     if is_sla_alert:
-        header_icon, header_label = "⏰", "ВНИМАНИЕ: SLA Alert"
+        header_icon, header_label = "⏰", "WARNING: SLA Alert"
     elif real_ticket_id and real_ticket_id.startswith("INC"):
-        header_icon, header_label = "🔴", "Инцидент"
+        header_icon, header_label = "🔴", "Incident"
     elif real_ticket_id and real_ticket_id.startswith("RITM"):
-        header_icon, header_label = "🟢", "RITM Запрос"
+        header_icon, header_label = "🟢", "RITM Request"
     else:
-        header_icon, header_label = "📝", "Тикет"
+        header_icon, header_label = "📝", "Ticket"
 
     if is_middle_east:
         tag_str = _detect_me_tag(location)

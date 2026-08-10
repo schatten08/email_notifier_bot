@@ -6,10 +6,12 @@ from bot.storage import state
 
 logger = logging.getLogger(__name__)
 
-# Пороговая длина, после которой поле показывается в свёрнутом виде с кнопкой
-# "Показать полностью", чтобы длинные значения (полный путь локации, длинное
-# описание) не превращали карточку в сплошную "простыню" текста.
-_LONG_LOCATION_THRESHOLD = 40
+# Пороговая длина, после которой длинное описание показывается в свёрнутом
+# виде с кнопкой "Show full description", чтобы оно не превращало карточку
+# в сплошную "простыню" текста. Локация теперь ВСЕГДА показывается только
+# коротким названием (город/страна), без кнопки раскрытия полного пути -
+# полный путь локации (например, "Asia - Central and West/Kazakhstan/Almaty")
+# не показывается вообще, только его короткая читаемая метка.
 _LONG_DESC_THRESHOLD = 250
 
 # Цвета контейнера в зависимости от критичности/приоритета тикета.
@@ -96,10 +98,12 @@ def build_ticket_card(ticket, mention_key=None):
     Строит Adaptive Card для структурированных данных тикета (см. bot/parser.py:
     parse_ticket()). Карточка содержит:
     - цветной контейнер-заголовок в зависимости от критичности/приоритета;
-    - FactSet с полями (Приоритет, Локация, SLA %, и т.д.) вместо сплошного текста;
-    - кнопку "Открыть в ServiceNow" (Action.OpenUrl), если есть ссылка на тикет;
-    - сворачиваемые блоки для длинной локации и длинного описания
-      (Action.ToggleVisibility), чтобы не растягивать карточку по умолчанию.
+    - FactSet с полями (Priority, Location:, SLA %, и т.д.) вместо сплошного текста;
+    - кнопку "Open in ServiceNow" (Action.OpenUrl), если есть ссылка на тикет;
+    - Location показывает только короткое название (город/страна), без кнопки
+      раскрытия полного пути локации;
+    - сворачиваемый блок для длинного описания (Action.ToggleVisibility),
+      чтобы не растягивать карточку по умолчанию.
     """
     body = []
 
@@ -126,48 +130,26 @@ def build_ticket_card(ticket, mention_key=None):
         if mention_text:
             body.append({"type": "TextBlock", "text": mention_text, "wrap": True})
 
-    body.append({"type": "TextBlock", "text": ticket.get('title') or "Нет заголовка", "wrap": True, "weight": "bolder"})
+    body.append({"type": "TextBlock", "text": ticket.get('title') or "No title", "wrap": True, "weight": "bolder"})
 
     facts = []
     if ticket.get('priority'):
-        facts.append(_fact("Приоритет", ticket['priority']))
+        facts.append(_fact("Priority", ticket['priority']))
     if ticket.get('sla_percent') is not None:
-        facts.append(_fact("SLA исчерпан", f"{ticket['sla_percent']}%"))
+        facts.append(_fact("SLA reached", f"{ticket['sla_percent']}%"))
 
-    location = ticket.get('location') or ""
-    location_short = ticket.get('location_short') or location
-    show_full_location = bool(location) and location != location_short and len(location) > _LONG_LOCATION_THRESHOLD
+    location_short = ticket.get('location_short') or ticket.get('location') or ""
     if location_short:
-        facts.append(_fact("Локация", location_short))
+        facts.append(_fact("Location:", location_short))
 
     if facts:
         body.append({"type": "FactSet", "facts": facts})
-
-    if show_full_location:
-        full_loc_id = f"fullLocation_{ticket.get('display_id', 'x')}"
-        body.append({
-            "type": "TextBlock",
-            "id": full_loc_id,
-            "text": f"Полный путь: {location}",
-            "wrap": True,
-            "isSubtle": True,
-            "size": "small",
-            "isVisible": False
-        })
-        body.append({
-            "type": "ActionSet",
-            "actions": [{
-                "type": "Action.ToggleVisibility",
-                "title": "📍 Показать полный путь локации",
-                "targetElements": [full_loc_id]
-            }]
-        })
 
     desc = ticket.get('description') or ""
     if desc:
         is_long_desc = len(desc) > _LONG_DESC_THRESHOLD
         short_desc = desc[:_LONG_DESC_THRESHOLD] + "..." if is_long_desc else desc
-        body.append({"type": "TextBlock", "text": "Описание:", "weight": "bolder", "spacing": "medium"})
+        body.append({"type": "TextBlock", "text": "Description:", "weight": "bolder", "spacing": "medium"})
         body.append({"type": "TextBlock", "text": short_desc, "wrap": True, "isSubtle": True})
 
         if is_long_desc:
@@ -184,7 +166,7 @@ def build_ticket_card(ticket, mention_key=None):
                 "type": "ActionSet",
                 "actions": [{
                     "type": "Action.ToggleVisibility",
-                    "title": "📄 Показать описание полностью",
+                    "title": "📄 Show full description",
                     "targetElements": [full_desc_id]
                 }]
             })
@@ -193,7 +175,7 @@ def build_ticket_card(ticket, mention_key=None):
     if ticket.get('ticket_url'):
         actions.append({
             "type": "Action.OpenUrl",
-            "title": "🔗 Открыть в ServiceNow",
+            "title": "🔗 Open in ServiceNow",
             "url": ticket['ticket_url']
         })
 
