@@ -1,6 +1,6 @@
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bot.config import TEAMS_REPORT_WEBHOOK_URL, TEAMS_WEBHOOK_URL, TEAMS_MIDDLE_EAST_WEBHOOK_URL
 from bot.storage import load_report, save_report
 from bot.parser import parse_employee_info
@@ -8,19 +8,27 @@ from bot.teams import send_teams_notification
 
 logger = logging.getLogger(__name__)
 
-# Если реальная дата события (Dismissal Date / Start Date / First Working Day /
-# дата из Title), извлечённая parse_employee_info(), старше даты получения
-# письма больше чем на этот порог - считаем запись "устаревшей" и не добавляем
-# в ТЕКУЩИЙ отчёт. Такое расхождение означает, что административный
-# "child"-тикет (например, возврат оборудования, дозакрытие) пришёл с большим
-# опозданием относительно реального события, которое почти наверняка уже было
-# учтено в ОДНОМ из прошлых, уже отправленных еженедельных отчётов. Раньше
-# такая запись безусловно попадала в текущее отчётное окно с чужой (реальной)
-# датой события, создавая путаницу вида "почему увольнение месяц назад
-# в отчёте этой недели" (инцидент: Maharramov). Порог чуть больше недели, чтобы
-# не отфильтровать легитimные события, случившиеся в начале ТЕКУЩЕЙ отчётной
-# недели (отчёт собирается с понедельника по пятницу).
-STALE_EVENT_DAYS_THRESHOLD = 9
+# Реальная граница ТЕКУЩЕГО отчётного окна - начало текущей недели (понедельник
+# 00:00 UTC). Ровно та же граница, которую bot/main.py использует, чтобы решить,
+# полностью пропустить письмо ("message.received < monday_start") или обработать
+# его как письмо текущей недели. Событие, дата которого РАНЬШЕ этой границы,
+# гарантированно уже было учтено в ОДНОМ из прошлых, уже отправленных
+# еженедельных отчётов (при условии, что бот работал непрерывно) - такую
+# запись нужно отбросить, а не задублировать в текущем отчёте.
+#
+# Раньше здесь использовалась эвристика "если дата события старше даты письма
+# больше чем на N дней" - число N подбиралось вручную и не было привязано к
+# реальной границе отчётного цикла. У такой эвристики есть слепая зона: событие
+# прошлой недели, дочерний тикет по которому пришёл всего через несколько дней
+# (меньше подобранного N) - НЕ отфильтровывался бы и задублировался в отчёте
+# этой недели. Сравнение с monday_start устраняет эту зону полностью, т.к.
+# использует ту же границу, что и реальный цикл сбора отчёта, а не угаданное число.
+def _current_report_window_start(now_utc=None):
+    """Возвращает начало текущей отчётной недели (понедельник 00:00 UTC)."""
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    monday_start = now_utc - timedelta(days=now_utc.weekday())
+    return monday_start.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _parse_report_date(raw_date):
@@ -40,8 +48,17 @@ def _parse_report_date(raw_date):
     return None
 
 
-def extract_report_data(full_text, subject, received_date=None, is_middle_east=False):
-    """Вызывается для каждого письма, чтобы наполнить еженедельный отчет."""
+def extract_report_data(full_text, subject, received_date=None, is_middle_east=False, report_window_start=None):
+    """
+    Вызывается для каждого письма, чтобы наполнить еженедельный отчет.
+
+    report_window_start - начало ТЕКУЩЕГО отчётного окна (понедельник 00:00 UTC).
+    Должен передаваться вызывающим кодом (bot/main.py), который уже вычисляет
+    эту границу для собственной логики фильтрации писем ("message.received <
+    monday_start"), чтобы обе проверки использовали ОДНУ и ту же границу. Если
+    не передан (например, в одноразовых/тестовых скриптах), вычисляется
+    самостоятельно от текущего момента.
+    """
     info = parse_employee_info(full_text, subject)
     if not info:
         return
@@ -60,14 +77,15 @@ def extract_report_data(full_text, subject, received_date=None, is_middle_east=F
         info['date'] = received_date.strftime('%Y-%m-%d')
         event_date = received_date.replace(tzinfo=None) if received_date.tzinfo else received_date
 
-    if event_date and received_date:
-        received_naive = received_date.replace(tzinfo=None) if received_date.tzinfo else received_date
-        if (received_naive - event_date).days > STALE_EVENT_DAYS_THRESHOLD:
+    if event_date is not None:
+        window_start = report_window_start if report_window_start is not None else _current_report_window_start()
+        window_start_naive = window_start.replace(tzinfo=None) if window_start.tzinfo else window_start
+        if event_date < window_start_naive:
             logger.warning(
-                f"Событие для {name} датировано {info.get('date')}, это больше чем "
-                f"{STALE_EVENT_DAYS_THRESHOLD} дней раньше даты получения письма "
-                f"({received_date}). Вероятно, уже учтено в одном из прошлых отчётов - "
-                f"пропускаю, чтобы не задублировать событие в чужом отчётном окне."
+                f"Событие для {name} датировано {info.get('date')}, это раньше начала "
+                f"текущего отчётного окна ({window_start_naive.strftime('%Y-%m-%d')}). "
+                f"Уже учтено в одном из прошлых отчётов - пропускаю, чтобы не "
+                f"задублировать событие в чужом отчётном окне."
             )
             return
 

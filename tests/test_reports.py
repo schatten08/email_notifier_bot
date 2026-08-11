@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import bot.reports as reports_module
-from bot.reports import extract_report_data, _parse_report_date
+from bot.reports import extract_report_data, _parse_report_date, _current_report_window_start
 
 
 class _FakeStore:
@@ -33,6 +33,12 @@ def _patch_store(monkeypatch):
     return store
 
 
+# Фиксированная граница отчётного окна для всех тестов ниже (понедельник
+# 00:00 UTC), передаётся явно как report_window_start - тесты не должны
+# зависеть от реальной текущей даты системы.
+_WINDOW_START = datetime(2026, 8, 3, 0, 0, 0, tzinfo=timezone.utc)  # понедельник
+
+
 # --- _parse_report_date ---
 
 def test_parse_report_date_handles_iso_format():
@@ -47,6 +53,15 @@ def test_parse_report_date_returns_none_for_unknown():
     assert _parse_report_date("Unknown") is None
     assert _parse_report_date(None) is None
     assert _parse_report_date("garbage") is None
+
+
+# --- _current_report_window_start ---
+
+def test_current_report_window_start_returns_monday_midnight_utc():
+    # Пятница 07 Aug 2026 -> понедельник этой же недели 03 Aug 2026 00:00 UTC.
+    friday = datetime(2026, 8, 7, 15, 30, 0, tzinfo=timezone.utc)
+    result = _current_report_window_start(friday)
+    assert result == datetime(2026, 8, 3, 0, 0, 0, tzinfo=timezone.utc)
 
 
 # --- extract_report_data: реальная дата события вместо даты письма ---
@@ -64,11 +79,14 @@ def test_extract_report_data_uses_real_event_date_not_received_date(monkeypatch)
         "Location: Almaty "
         "Title: NPR"
     )
-    # Письмо получено на 2 дня позже реальной даты события - в пределах порога,
-    # запись должна попасть в отчёт с датой события (05 Aug), а не письма (07 Aug).
+    # Событие (05 Aug) внутри текущего отчётного окна (началось 03 Aug) -
+    # запись должна попасть в отчёт с датой события, а не письма (07 Aug).
     received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
 
-    extract_report_data(full_text, subject, received_date=received, is_middle_east=False)
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
 
     assert "John Smith" in store.data
     assert store.data["John Smith"]["date"] == "05 Aug 2026"
@@ -88,17 +106,21 @@ def test_extract_report_data_falls_back_to_received_date_when_event_date_unknown
     )
     received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
 
-    extract_report_data(full_text, subject, received_date=received, is_middle_east=False)
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
 
     assert "Jane Doe" in store.data
     assert store.data["Jane Doe"]["date"] == "2026-08-07"
 
 
-def test_extract_report_data_skips_stale_event_from_late_child_ticket(monkeypatch):
+def test_extract_report_data_skips_event_before_current_report_window(monkeypatch):
     """Регрессия (Maharramov): административный child-тикет (например, дозакрытие
     возврата оборудования) может прийти спустя много дней после реальной даты
-    события, которая уже наверняка учтена в одном из прошлых отчётов. Такая
-    запись не должна попадать в ТЕКУЩЕЕ отчётное окно."""
+    события. Если эта дата раньше начала ТЕКУЩЕГО отчётного окна, событие
+    гарантированно уже было учтено в одном из прошлых отчётов и не должно
+    попасть в текущий отчёт."""
     store = _patch_store(monkeypatch)
 
     subject = "NPR (01 Jul 2026) has been resolved"
@@ -108,18 +130,50 @@ def test_extract_report_data_skips_stale_event_from_late_child_ticket(monkeypatc
         "Location: Almaty "
         "Title: NPR"
     )
-    # Письмо пришло на месяц позже реальной даты события - далеко за порогом.
+    # Письмо пришло в текущем окне, но событие (01 Jul) - за месяц ДО начала
+    # текущего окна (03 Aug).
     received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
 
-    extract_report_data(full_text, subject, received_date=received, is_middle_east=False)
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
 
     assert "Maharramov Test" not in store.data
 
 
-def test_extract_report_data_keeps_event_within_threshold(monkeypatch):
-    """Событие, случившееся в начале текущей отчётной недели (например,
-    в понедельник, письмо пришло в пятницу), не должно отфильтровываться -
-    расхождение в пределах порога STALE_EVENT_DAYS_THRESHOLD."""
+def test_extract_report_data_skips_event_from_few_days_before_window_start(monkeypatch):
+    """Ключевой случай, который старая эвристика ('дней с даты письма')
+    пропускала: событие прошлой недели (за 2 дня до начала текущего окна),
+    дочерний тикет по которому пришёл всего через несколько дней. Разница
+    между письмом и событием МЕНЬШЕ старого порога (9 дней), поэтому старая
+    эвристика НЕ отфильтровала бы эту запись - но она уже точно попала в
+    прошлый отчёт, т.к. её дата раньше начала текущего окна."""
+    store = _patch_store(monkeypatch)
+
+    subject = "NPR (01 Aug 2026) has been resolved"
+    full_text = (
+        "NPR (01 Aug 2026) has been resolved. "
+        "Employee Name: Late Child Ticket "
+        "Location: Almaty "
+        "Title: NPR"
+    )
+    # Письмо пришло через 4 дня после события - старый порог (9 дней) НЕ
+    # отфильтровал бы это. Но событие (01 Aug) раньше начала текущего окна
+    # (03 Aug) - новая логика должна отфильтровать.
+    received = datetime(2026, 8, 5, 10, 0, 0, tzinfo=timezone.utc)
+
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
+
+    assert "Late Child Ticket" not in store.data
+
+
+def test_extract_report_data_keeps_event_on_first_day_of_window(monkeypatch):
+    """Событие, случившееся ровно в начале текущей отчётной недели
+    (понедельник), должно попадать в отчёт, а не отфильтровываться."""
     store = _patch_store(monkeypatch)
 
     subject = "NPR (03 Aug 2026) has been resolved"
@@ -129,9 +183,32 @@ def test_extract_report_data_keeps_event_within_threshold(monkeypatch):
         "Location: Astana "
         "Title: NPR"
     )
-    received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)  # +4 дня
+    received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
 
-    extract_report_data(full_text, subject, received_date=received, is_middle_east=False)
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
 
     assert "Alex Recent" in store.data
     assert store.data["Alex Recent"]["date"] == "03 Aug 2026"
+
+
+def test_extract_report_data_uses_current_window_when_not_passed(monkeypatch):
+    """Если report_window_start не передан вызывающим кодом (например, из
+    одноразового скрипта), функция должна вычислить границу самостоятельно
+    от реальной текущей даты, а не пропускать проверку вовсе."""
+    store = _patch_store(monkeypatch)
+
+    subject = "NPR (01 Jan 2000) has been resolved"
+    full_text = (
+        "NPR (01 Jan 2000) has been resolved. "
+        "Employee Name: Ancient Event "
+        "Location: Almaty "
+        "Title: NPR"
+    )
+    received = datetime.now(timezone.utc)
+
+    extract_report_data(full_text, subject, received_date=received, is_middle_east=False)
+
+    assert "Ancient Event" not in store.data

@@ -105,7 +105,7 @@ def test_report_logic(region="cis"):
 
         if is_middle_east_msg == is_me_region:
             if ("NPR" in full_text or "ER" in full_text or "Transformation from Trainee" in full_text or "Relocation Request: Exit Task" in full_text):
-                extract_report_data(full_text, subject, received_date=message.received, is_middle_east=is_middle_east_msg)
+                extract_report_data(full_text, subject, received_date=message.received, is_middle_east=is_middle_east_msg, report_window_start=limit_date)
     
     print("\nОтправляю отчет в Teams...")
     send_weekly_report(is_me=is_me_region)
@@ -225,7 +225,7 @@ def main():
                                     if r.name: all_rec_info.append(r.name.lower())
 
                             is_me = is_middle_east_message(message, all_rec_info, clean_msg_body)
-                            extract_report_data(full_text, message.subject, received_date=message.received, is_middle_east=is_me)
+                            extract_report_data(full_text, message.subject, received_date=message.received, is_middle_east=is_me, report_window_start=monday_start)
                             continue
                         else:
                             logger.warning(
@@ -267,7 +267,7 @@ def main():
                         full_text = subject + " " + clean_msg_body
 
                         is_middle_east = is_middle_east_message(message, all_recipients_info, clean_msg_body)
-                        extract_report_data(full_text, subject, received_date=message.received, is_middle_east=is_middle_east)
+                        extract_report_data(full_text, subject, received_date=message.received, is_middle_east=is_middle_east, report_window_start=monday_start)
 
                         ticket_id_quick = None
                         quick_match = re.search(r'(INC\d+|RITM\d+)', subject)
