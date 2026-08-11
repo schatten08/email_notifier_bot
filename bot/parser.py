@@ -33,6 +33,50 @@ def is_middle_east_message(message, recipients_info, clean_body):
         
     return False
 
+# Паттерны, чьё совпадение ГАРАНТИРОВАННО относится к нужному сотруднику
+# (новому сотруднику для NPR, увольняющемуся для ER) - это явно поименованные
+# поля/конструкции, где по смыслу поля не может стоять другой человек.
+# Пробуются В ЭТОМ порядке (порядок ВНУТРИ уровня всё ещё важен: "Title: ...
+# (date) (Name)" должен проверяться до общих construkций типа "Exit Task for",
+# т.к. subject может содержать оба варианта одновременно), но КАЖДЫЙ из них
+# принципиально приоритетнее любого fallback-паттерна ниже (см.
+# _FALLBACK_NAME_PATTERNS) - это гарантия на архитектурном уровне, а не по
+# отдельному найденному кейсу.
+_AUTHORITATIVE_NAME_PATTERNS = [
+    r'Employee Name\s*:?\s*([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
+    r'Trainee\s*:\s*([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
+    r'Title:\s*(?:ER|NPR|ReR)?[^()]*\((?:[^)]+)\)\s*\(([^)]+)\)',
+    r'Exit Task for\s+([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
+    r'\(([A-Z][a-z]+\s+[A-Z][a-z]+)\)\s*Dismount',
+    r'\(([A-Z][a-z]+\s+[A-Z][a-z]+)\)\s*Create',
+]
+
+# Fallback-паттерны: имя, извлечённое отсюда, МОЖЕТ относиться не к самому
+# сотруднику, а к человеку, действующему от его имени (например, менеджер,
+# забравший оборудование). Пробуются ТОЛЬКО если ни один авторитетный паттерн
+# выше не сработал - независимо от того, в каком порядке они встречаются
+# в тексте письма.
+_FALLBACK_NAME_PATTERNS = [
+    r'Service Recipient\s*:?\s*([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
+]
+
+
+def _clean_extracted_name(raw_name):
+    """
+    Отрезает от совпадения regex-а всё, что попало туда лишним (следующие
+    поля формы, служебные слова), и проверяет, что осталось похожее на
+    настоящее имя (минимум два слова). Возвращает None, если после очистки
+    результат не похож на имя.
+    """
+    potential_name = raw_name.strip()
+    potential_name = re.split(r'SLA|Location|Dismissal|Date|requires|has|is|Floor|Room| \n|\t|\n', potential_name)[0].strip()
+    if len(potential_name.split()) > 4:
+        potential_name = " ".join(potential_name.split()[:3])
+    if len(potential_name.split()) >= 2:
+        return potential_name
+    return None
+
+
 def parse_employee_info(full_text, subject):
     """
     Извлекает данные о сотруднике (NPR/ER) для отчета.
@@ -93,26 +137,43 @@ def parse_employee_info(full_text, subject):
             return None
     
     name = None
-    name_patterns = [
-        r'Employee Name\s*:?\s*([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
-        r'Trainee\s*:\s*([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
-        r'Title:\s*(?:ER|NPR|ReR)?[^()]*\((?:[^)]+)\)\s*\(([^)]+)\)',
-        r'Service Recipient\s*:?\s*([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
-        r'Exit Task for\s+([A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+(?:\s+[A-Zа-яА-Я][a-zа-яA-ZА-Я\-]+){1,3})',
-        r'\(([A-Z][a-z]+\s+[A-Z][a-z]+)\)\s*Dismount',
-        r'\(([A-Z][a-z]+\s+[A-Z][a-z]+)\)\s*Create'
-    ]
-    
-    for pattern in name_patterns:
+
+    # Двухуровневая система извлечения имени вместо одной плоской цепочки
+    # regex-паттернов, пробуемых по порядку. АРХИТЕКТУРНАЯ ПРИЧИНА: "Service
+    # Recipient" - это НЕ надёжное поле, оно может означать как самого
+    # сотрудника, так и человека, который физически забрал/вернул
+    # оборудование ОТ ЕГО ИМЕНИ (менеджер, коллега). Все остальные поля ниже
+    # (_AUTHORITATIVE_NAME_PATTERNS) - это поля, где извлечённое имя
+    # ГАРАНТИРОВАННО относится к самому нужному сотруднику (Employee Name,
+    # Trainee:, имя в скобках из Title, "Exit Task for X" из subject).
+    #
+    # Раньше все паттерны были одним плоским списком, и порядок между
+    # "Service Recipient" и авторитетными полями подбирался ТОЧЕЧНО, отдельным
+    # патчем на каждый новый найденный кейс (сначала Trainee: приоритизировали
+    # над Service Recipient, затем отдельно Title-bracket). Это не давало
+    # гарантии на будущее: у "Service Recipient" оставались МЕНЕЕ приоритетные
+    # позиции только относительно уже известных полей, но не относительно
+    # ВСЕХ авторитетных полей сразу - т.е. новая комбинация "новое авторитетное
+    # поле, стоявшее в списке ниже Service Recipient" могла повторить тот же
+    # баг. Теперь Service Recipient принципиально пробуется ТОЛЬКО если НИ ОДИН
+    # авторитетный паттерн не сработал - независимо от порядка внутри самого
+    # авторитетного уровня.
+    for pattern in _AUTHORITATIVE_NAME_PATTERNS:
         m = re.search(pattern, full_text if 'Title:' in pattern else (subject + " " + full_text), re.IGNORECASE)
         if m:
-            potential_name = m.group(1).strip()
-            potential_name = re.split(r'SLA|Location|Dismissal|Date|requires|has|is|Floor|Room| \n|\t|\n', potential_name)[0].strip()
-            if len(potential_name.split()) > 4:
-                potential_name = " ".join(potential_name.split()[:3])
-            if len(potential_name.split()) >= 2:
-                name = potential_name
+            candidate = _clean_extracted_name(m.group(1))
+            if candidate:
+                name = candidate
                 break
+
+    if not name:
+        for pattern in _FALLBACK_NAME_PATTERNS:
+            m = re.search(pattern, subject + " " + full_text, re.IGNORECASE)
+            if m:
+                candidate = _clean_extracted_name(m.group(1))
+                if candidate:
+                    name = candidate
+                    break
     
     req_date = "Unknown"
     m_date = re.search(r'(?:effective from|Dismissal Date|Start Date|First Working Day)[:\s]*(\d{4}-\d{2}-\d{2}|\d+\s*[A-Z][a-z]+\s*\d{4})', full_text, re.IGNORECASE)

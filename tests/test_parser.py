@@ -419,3 +419,48 @@ def test_parse_employee_info_er_title_bracket_name_beats_service_recipient():
     assert info['name'] == "Daniil Orlov"
     assert info['type'] == "ER"
     assert info['city'] == "Almaty"
+
+
+# --- Инвариант приоритета имени: авторитетные поля ВСЕГДА выше Service
+# Recipient, независимо от НОВОЙ, ранее не встречавшейся комбинации ---
+# Регрессия архитектурного класса: раньше "Service Recipient" стоял в общем
+# плоском списке паттернов и был приоритетнее паттернов "(Name) Dismount"/
+# "(Name) Create"/"Exit Task for X", которые находятся в списке НИЖЕ него.
+# Если бы такая комбинация встретилась в реальном письме (Service Recipient +
+# один из этих паттернов одновременно), баг повторился бы в новой форме,
+# несмотря на уже сделанные точечные фиксы для Trainee/Title-bracket.
+# Двухуровневая система (_AUTHORITATIVE_NAME_PATTERNS пробуются ПОЛНОСТЬЮ
+# раньше _FALLBACK_NAME_PATTERNS) гарантирует, что это в принципе невозможно.
+
+def test_parse_employee_info_exit_task_for_beats_service_recipient_even_when_recipient_comes_first():
+    """'Exit Task for X' - авторитетный паттерн, находившийся НИЖЕ Service
+    Recipient в старом плоском списке. Даже если Service Recipient упоминается
+    в письме РАНЬШЕ 'Exit Task for X' по тексту, должно победить авторитетное
+    поле, а не порядок появления в письме."""
+    subject = "Exit Task for Assem Dossova has been closed"
+    full_text = (
+        "Service Recipient: Manager Proxy "
+        "Exit Task for Assem Dossova has been closed. "
+        "Dismount user's workstation "
+        "Location: Kazakhstan, Almaty"
+    )
+    info = parse_employee_info(full_text, subject)
+    assert info is not None
+    assert info['name'] == "Assem Dossova"
+
+
+def test_parse_employee_info_dismount_bracket_beats_service_recipient_even_when_recipient_comes_first():
+    """'(Name) Dismount' - авторитетный паттерн, находившийся НИЖЕ Service
+    Recipient в старом плоском списке. Новая, ранее не встречавшаяся
+    комбинация (Service Recipient идёт раньше по тексту) не должна давать
+    неверное имя."""
+    subject = "Requested Item RITM0009999999 resolved"
+    full_text = (
+        "Requested Item RITM0009999999 resolved. "
+        "Service Recipient: Office Proxy "
+        "(Adilet Bekov) Dismount user's workstation "
+        "Location: Kazakhstan, Astana"
+    )
+    info = parse_employee_info(full_text, subject)
+    assert info is not None
+    assert info['name'] == "Adilet Bekov"
