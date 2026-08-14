@@ -126,7 +126,16 @@ def parse_employee_info(full_text, subject):
             is_npr = True
 
     if not (is_npr or is_er):
-        if any(kw in full_text or kw in subject for kw in ['ER ', 'Exit Request', 'Dismount']):
+        # ВАЖНО: 'ER' проверяется через regex с границей слова (\bER\b), а НЕ
+        # простой substring-проверкой 'ER ' in full_text/subject. Substring-
+        # вариант ложно совпадал с окончанием ЛЮБОГО слова на "er" перед
+        # пробелом (LETTER, MANAGER, OFFICER, TRANSFER, CUSTOMER, PROVIDER,
+        # ORDER, OWNER, PARTNER, PROPER и т.д.), из-за чего письма, вообще не
+        # относящиеся к увольнению сотрудника (например, "Termination of
+        # Lease agreement" про аренду офиса), ложно классифицировались как
+        # ER и попадали в отчёт с name=None.
+        if re.search(r'\bER\b', full_text) or re.search(r'\bER\b', subject) or \
+           any(kw in full_text or kw in subject for kw in ['Exit Request', 'Dismount']):
             is_er = True
 
     if not (is_npr or is_er):
@@ -174,7 +183,16 @@ def parse_employee_info(full_text, subject):
                 if candidate:
                     name = candidate
                     break
-    
+
+    # ЗАЩИТА В ГЛУБИНУ: если ни один паттерн имени не сработал, письмо не
+    # относится к реальному NPR/ER-запросу конкретного сотрудника (либо это
+    # письмо не про сотрудника вовсе, а классификация is_npr/is_er сработала
+    # ложно на какое-то совпадение по ключевому слову) - в отчёт такая запись
+    # не должна попадать под именем None (что выглядит как "None (ER) | ..."
+    # в финальном отчёте и не несёт пользы получателю).
+    if not name:
+        return None
+
     req_date = "Unknown"
     m_date = re.search(r'(?:effective from|Dismissal Date|Start Date|First Working Day)[:\s]*(\d{4}-\d{2}-\d{2}|\d+\s*[A-Z][a-z]+\s*\d{4})', full_text, re.IGNORECASE)
     if m_date:
