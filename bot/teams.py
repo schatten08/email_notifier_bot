@@ -89,6 +89,50 @@ def _build_mention_entities(mention_key):
     return "\n".join(at_tags), entities
 
 
+def _build_all_mentions_entities():
+    """
+    Собирает уникальный список ВСЕХ ответственных из data/responsibles.json
+    (по email, без дублей для тех, кто отвечает за несколько локаций сразу)
+    и строит из него настоящие <at> mention-теги + entities.
+
+    Раньше вместо этого использовался один псевдо-тег <at>everyone</at> с
+    mentioned.id="everyone" (см. историю send_time_reminder). Но Teams
+    резолвит упоминание только по реальному идентификатору пользователя
+    (email/UPN, AAD Object ID или Teams user id) - строки "everyone" не
+    существует ни в одном справочнике пользователей, поэтому карточка
+    просто отображала слово "everyone" как обычный текст без подсветки:
+    люди физически не получали пуш/уведомление о упоминании. Теперь тегаем
+    каждого настоящего сотрудника по его реальному email, как и в
+    _build_mention_entities() для тикетов.
+    """
+    responsibles_by_location = get_location_responsibles()
+    seen_emails = set()
+    unique_responsibles = []
+    for responsibles in responsibles_by_location.values():
+        for resp in responsibles:
+            email = (resp.get('email') or "").lower()
+            if not email or email in seen_emails:
+                continue
+            seen_emails.add(email)
+            unique_responsibles.append(resp)
+
+    at_tags = []
+    entities = []
+    for resp in unique_responsibles:
+        at_text = f"<at>{resp['name']}</at>"
+        at_tags.append(at_text)
+        entities.append({
+            "type": "mention",
+            "text": at_text,
+            "mentioned": {
+                "id": resp['email'],
+                "name": resp['name']
+            }
+        })
+
+    return " ".join(at_tags), entities
+
+
 def _fact(title, value):
     return {"title": title, "value": value}
 
@@ -263,11 +307,25 @@ def send_plain_message(webhook_url, message_text, log_label):
 
 def send_time_reminder(webhook_url, message_text, log_label):
     """
-    Отправляет напоминание про заполнение Time всем через <at>everyone</at> Adaptive Card.
-    Используется как для утреннего, так и для дневного напоминания (по пятницам).
+    Отправляет напоминание про заполнение Time с реальными тегами всех
+    ответственных из data/responsibles.json. Используется как для утреннего,
+    так и для дневного напоминания (по пятницам).
+
+    message_text может содержать плейсхолдер "{mentions}" - он будет заменён
+    на реальные <at>Имя</at> теги. Если плейсхолдера нет, теги добавляются
+    отдельной строкой перед текстом (обратная совместимость).
     """
     if not webhook_url:
         return
+
+    mention_text, entities = _build_all_mentions_entities()
+
+    if "{mentions}" in message_text:
+        final_text = message_text.format(mentions=mention_text)
+    elif mention_text:
+        final_text = f"{mention_text} {message_text}"
+    else:
+        final_text = message_text
 
     payload = {
         "type": "message",
@@ -275,10 +333,10 @@ def send_time_reminder(webhook_url, message_text, log_label):
             "contentType": "application/vnd.microsoft.card.adaptive",
             "content": {
                 "type": "AdaptiveCard",
-                "body": [{"type": "TextBlock", "text": message_text, "wrap": True}],
+                "body": [{"type": "TextBlock", "text": final_text, "wrap": True}],
                 "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                 "version": "1.0",
-                "msteams": {"entities": [{"type": "mention", "text": "<at>everyone</at>", "mentioned": {"id": "everyone", "name": "everyone"}}]}
+                "msteams": {"entities": entities}
             }
         }]
     }

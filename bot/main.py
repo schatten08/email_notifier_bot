@@ -142,7 +142,7 @@ def main():
                 if state.last_time_reminder_date != now_utc.date():
                     send_time_reminder(
                         TEAMS_TIME_REMINDER_WEBHOOK_URL,
-                        "<at>everyone</at> 🔔 **Напоминание**: Необходимо заполнить Time по ссылке https://time.epam.com/",
+                        "{mentions} 🔔 **Напоминание**: Необходимо заполнить Time по ссылке https://time.epam.com/",
                         "Утреннее напоминание про Time"
                     )
                     state.last_time_reminder_date = now_utc.date()
@@ -152,7 +152,7 @@ def main():
                 if state.last_afternoon_time_reminder_date != now_utc.date():
                     send_time_reminder(
                         TEAMS_TIME_REMINDER_WEBHOOK_URL,
-                        "<at>everyone</at> ⏰ **Повторное напоминание**: Пожалуйста, не забудьте заполнить Time до конца дня: https://time.epam.com/",
+                        "{mentions} ⏰ **Повторное напоминание**: Пожалуйста, не забудьте заполнить Time до конца дня: https://time.epam.com/",
                         "Дневное повторное напоминание про Time"
                     )
                     state.last_afternoon_time_reminder_date = now_utc.date()
@@ -161,11 +161,17 @@ def main():
             # Вечернее пожелание хорошего вечера и благодарность за работу.
             # Отправляется в тот же чат, что и напоминания про Time, каждый
             # будний день (Пн-Пт) в 19:00 по Бишкеку (UTC+6 -> 13:00 UTC).
+            # По пятницам (weekday() == 4) текст другой - вместо "хорошего
+            # вечера" желаем хороших ВЫХОДНЫХ, так как впереди два дня отдыха.
             if now_utc.weekday() <= 4 and now_utc.hour >= 13:
                 if state.last_evening_thanks_date != now_utc.date():
+                    if now_utc.weekday() == 4:
+                        evening_message = "🎉 Спасибо за отличную работу на этой неделе! Хороших выходных и отличного отдыха! 🙌 Пора домой:)"
+                    else:
+                        evening_message = "🌇 Спасибо за отличную работу сегодня! Хорошего вечера и приятного отдыха! 🙌 Пора домой:)"
                     send_plain_message(
                         TEAMS_TIME_REMINDER_WEBHOOK_URL,
-                        "🌇 Спасибо за отличную работу сегодня! Хорошего вечера и приятного отдыха! 🙌 Пора домой:)",
+                        evening_message,
                         "Вечернее пожелание"
                     )
                     state.last_evening_thanks_date = now_utc.date()

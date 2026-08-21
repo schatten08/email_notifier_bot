@@ -9,7 +9,7 @@ import json
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from bot.teams import build_ticket_card, _build_mention_entities
+from bot.teams import build_ticket_card, _build_mention_entities, _build_all_mentions_entities, send_time_reminder
 
 
 def _base_ticket(**overrides):
@@ -220,3 +220,94 @@ def test_card_includes_mentions_in_msteams_entities(monkeypatch):
     mention_block_texts = [b["text"] for b in text_blocks if "<at>" in b.get("text", "")]
     assert len(mention_block_texts) == 1
     assert mention_block_texts[0] == "<at>Rustam Baratov</at>\n<at>Dmitriy Akimov</at>"
+
+
+# --- Напоминание про Time: реальные тэги вместо фейкового "everyone" ---
+
+def test_build_all_mentions_deduplicates_by_email(monkeypatch):
+    """Один и тот же человек может быть ответственным за несколько локаций
+    (например, Bogdan Martemyanov за 'uzbekistan' и 'tashkent') - в итоговом
+    списке для напоминания про Time он должен быть тэгнут только один раз."""
+    import bot.teams as teams_module
+
+    def fake_responsibles():
+        return {
+            "uzbekistan": [{"name": "Bogdan Martemyanov", "email": "bogdan_martemyanov@epam.com"}],
+            "tashkent": [{"name": "Bogdan Martemyanov", "email": "bogdan_martemyanov@epam.com"}],
+            "almaty": [{"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"}],
+        }
+
+    monkeypatch.setattr(teams_module, "get_location_responsibles", fake_responsibles)
+
+    mention_text, entities = _build_all_mentions_entities()
+
+    assert len(entities) == 2
+    assert mention_text.count("Bogdan Martemyanov") == 1
+    assert mention_text.count("Rustam Baratov") == 1
+
+
+def test_build_all_mentions_uses_real_email_not_literal_everyone(monkeypatch):
+    """Раньше mentioned.id был буквальной строкой 'everyone', которую Teams
+    не может резолвить ни в одного реального пользователя - из-за этого тэг
+    отображался как обычный текст без подсветки/уведомления. Теперь id
+    всегда настоящий email сотрудника."""
+    import bot.teams as teams_module
+
+    def fake_responsibles():
+        return {"almaty": [{"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"}]}
+
+    monkeypatch.setattr(teams_module, "get_location_responsibles", fake_responsibles)
+
+    _, entities = _build_all_mentions_entities()
+
+    assert entities[0]["mentioned"]["id"] == "rustam_baratov@epam.com"
+    assert entities[0]["mentioned"]["id"] != "everyone"
+
+
+def test_build_all_mentions_skips_entries_without_email(monkeypatch):
+    import bot.teams as teams_module
+
+    def fake_responsibles():
+        return {
+            "kazakhstan": [],
+            "almaty": [{"name": "No Email Person", "email": ""}],
+        }
+
+    monkeypatch.setattr(teams_module, "get_location_responsibles", fake_responsibles)
+
+    mention_text, entities = _build_all_mentions_entities()
+    assert mention_text == ""
+    assert entities == []
+
+
+def test_send_time_reminder_replaces_mentions_placeholder(monkeypatch):
+    import bot.teams as teams_module
+
+    def fake_responsibles():
+        return {"almaty": [{"name": "Rustam Baratov", "email": "rustam_baratov@epam.com"}]}
+
+    monkeypatch.setattr(teams_module, "get_location_responsibles", fake_responsibles)
+
+    captured = {}
+
+    def fake_post(url, json=None, timeout=None):
+        captured['payload'] = json
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+        return FakeResponse()
+
+    monkeypatch.setattr(teams_module.requests, "post", fake_post)
+
+    send_time_reminder(
+        "https://fake-webhook.example.com",
+        "{mentions} 🔔 Напоминание про Time",
+        "Тест"
+    )
+
+    card = captured['payload']['attachments'][0]['content']
+    body_text = card['body'][0]['text']
+    assert "<at>Rustam Baratov</at>" in body_text
+    assert "everyone" not in body_text
+    assert card['msteams']['entities'][0]['mentioned']['id'] == "rustam_baratov@epam.com"
