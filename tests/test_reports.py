@@ -212,3 +212,170 @@ def test_extract_report_data_uses_current_window_when_not_passed(monkeypatch):
     extract_report_data(full_text, subject, received_date=received, is_middle_east=False)
 
     assert "Ancient Event" not in store.data
+
+
+# --- extract_report_data: dead-letter при подозрении на дрифт формата ---
+# См. bot/parser.py::parse_employee_info_with_reason - reason непустой ТОЛЬКО
+# когда письмо прошло классификацию как финальное NPR/ER-событие конкретного
+# сотрудника, но извлечение имени/города не удалось (кандидат в отчёт,
+# который иначе тихо потерялся бы).
+
+class _FakeDeadLetterSink:
+    def __init__(self):
+        self.calls = []
+
+    def append(self, reason, ticket_id=None):
+        self.calls.append({"reason": reason, "ticket_id": ticket_id})
+
+
+def _patch_dead_letter(monkeypatch):
+    sink = _FakeDeadLetterSink()
+    monkeypatch.setattr(reports_module, "append_dead_letter", sink.append)
+    return sink
+
+
+def test_extract_report_data_writes_dead_letter_when_name_not_found(monkeypatch):
+    """Финальное ER-письмо (is_final=True, ER-ключевые слова есть), но НИ
+    ОДИН паттерн имени не совпал - это ровно кандидат в отчёт, который
+    рискует тихо потеряться. Должен уйти в dead-letter с reason='name_not_found'."""
+    _patch_store(monkeypatch)
+    sink = _patch_dead_letter(monkeypatch)
+
+    subject = "ER (05 Aug 2026) has been resolved"
+    full_text = (
+        "ER (05 Aug 2026) has been resolved. "
+        "Location: Almaty "
+        "Title: ER"
+    )
+    received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
+
+    assert len(sink.calls) == 1
+    assert sink.calls[0]["reason"] == "name_not_found"
+
+
+def test_extract_report_data_writes_dead_letter_with_ticket_id_when_present(monkeypatch):
+    _patch_store(monkeypatch)
+    sink = _patch_dead_letter(monkeypatch)
+
+    subject = "ER (05 Aug 2026) has been resolved"
+    full_text = (
+        "ER (05 Aug 2026) has been resolved. RITM0009999 "
+        "Location: Almaty "
+        "Title: ER"
+    )
+    received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
+
+    assert sink.calls[0]["ticket_id"] == "RITM0009999"
+
+
+def test_extract_report_data_dead_letter_never_receives_subject_or_name(monkeypatch):
+    """GDPR-guard: append_dead_letter должен вызываться ТОЛЬКО с reason и
+    ticket_id - ни subject, ни full_text, ни имя не должны передаваться
+    как позиционные/именованные аргументы (защита от случайной регрессии,
+    если кто-то в будущем 'для удобства' добавит subject в вызов).
+
+    Письмо ниже сделано так, чтобы full_text содержал похожее на имя
+    упоминание сотрудника ('Confidential Person'), но НЕ через один из
+    паттернов _AUTHORITATIVE_NAME_PATTERNS/_FALLBACK_NAME_PATTERNS - именно
+    поэтому name не находится (reason='name_not_found'), а не потому что
+    в письме вообще нет персональных данных. Тест проверяет, что даже в
+    такой ситуации в dead-letter не попадает ничего, кроме reason/ticket_id."""
+    _patch_store(monkeypatch)
+    sink = _patch_dead_letter(monkeypatch)
+
+    subject = "ER (05 Aug 2026) has been resolved"
+    full_text = (
+        "ER (05 Aug 2026) has been resolved. "
+        "Employee mentioned: Confidential Person "
+        "Location: Almaty "
+        "Title: ER"
+    )
+    received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
+
+    assert len(sink.calls) == 1
+    assert sink.calls[0]["reason"] == "name_not_found"
+    for call in sink.calls:
+        assert set(call.keys()) == {"reason", "ticket_id"}
+        for value in call.values():
+            assert "Confidential" not in str(value)
+
+
+def test_extract_report_data_no_dead_letter_when_name_found_but_city_missing_has_no_pii(monkeypatch):
+    """Второй сценарий дрифта: имя нашлось (значит это точно письмо про
+    конкретного сотрудника), но город не распознан - тоже должно уйти в
+    dead-letter с reason='city_not_found', и снова без PII."""
+    _patch_store(monkeypatch)
+    sink = _patch_dead_letter(monkeypatch)
+
+    subject = "Exit Task for John Smith has been resolved"
+    full_text = (
+        "Exit Task for John Smith has been resolved. "
+        "Title: ER"
+    )
+    received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
+
+    assert len(sink.calls) == 1
+    assert sink.calls[0]["reason"] == "city_not_found"
+    assert set(sink.calls[0].keys()) == {"reason", "ticket_id"}
+
+
+def test_extract_report_data_no_dead_letter_for_irrelevant_email(monkeypatch):
+    """Обычное письмо, не относящееся к NPR/ER вовсе (или не финальное) -
+    НЕ должно попадать в dead-letter, это ожидаемое поведение, а не
+    аномалия/дрифт формата."""
+    _patch_store(monkeypatch)
+    sink = _patch_dead_letter(monkeypatch)
+
+    subject = "Some random ticket assigned"
+    full_text = "Some random ticket assigned. Title: Hardware request"
+    received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
+
+    assert sink.calls == []
+
+
+def test_extract_report_data_no_dead_letter_when_successfully_parsed(monkeypatch):
+    """Успешно распарсенное письмо не должно попадать в dead-letter."""
+    store = _patch_store(monkeypatch)
+    sink = _patch_dead_letter(monkeypatch)
+
+    subject = "NPR (05 Aug 2026) has been resolved"
+    full_text = (
+        "NPR (05 Aug 2026) has been resolved. "
+        "Employee Name: John Smith "
+        "Location: Almaty "
+        "Title: NPR"
+    )
+    received = datetime(2026, 8, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+    extract_report_data(
+        full_text, subject, received_date=received, is_middle_east=False,
+        report_window_start=_WINDOW_START,
+    )
+
+    assert "John Smith" in store.data
+    assert sink.calls == []

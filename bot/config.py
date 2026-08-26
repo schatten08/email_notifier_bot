@@ -32,6 +32,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 REPORT_FILE = os.path.join(DATA_DIR, "weekly_report.json")
 REPORT_ME_FILE = os.path.join(DATA_DIR, "weekly_report_me.json")
 CHECKPOINT_FILE = os.path.join(DATA_DIR, "bot_checkpoint.json")
+DEAD_LETTER_FILE = os.path.join(DATA_DIR, "dead_letters.json")
 TOKEN_FILE = os.path.join(DATA_DIR, "o365_token.txt")
 RESPONSIBLES_FILE = os.path.join(DATA_DIR, "responsibles.json")
 

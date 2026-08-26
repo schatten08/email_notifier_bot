@@ -3,12 +3,20 @@ Unit-тесты для bot/parser.py.
 
 Запуск: pytest tests/test_parser.py -v
 """
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from bot.parser import cleanup_html, parse_ticket, parse_employee_info
+from bot.parser import cleanup_html, parse_ticket, parse_employee_info, _extract_table_fields, _extract_ticket_fields
+
+_FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
+
+
+def _load_fixture(name):
+    with open(os.path.join(_FIXTURES_DIR, name), encoding='utf-8') as f:
+        return f.read()
+
 
 
 # --- cleanup_html ---
@@ -464,3 +472,181 @@ def test_parse_employee_info_dismount_bracket_beats_service_recipient_even_when_
     info = parse_employee_info(full_text, subject)
     assert info is not None
     assert info['name'] == "Adilet Bekov"
+
+
+# --- _extract_table_fields: разбор HTML-таблиц ServiceNow (label/value) ---
+# АРХИТЕКТУРНАЯ ПРИЧИНА (см. docstring _extract_table_fields в bot/parser.py):
+# реальные письма ServiceNow (подтверждено фикстурой из настоящего письма,
+# см. tests/fixtures/servicenow_er_child_ritm.html) устроены как регулярная
+# табличная структура <tr><td class="...label...">Label</td><td class="...
+# value...">Value</td></tr>, а не плоский текст. Граница значения задаётся
+# закрывающим тегом, а не угадывается regex-ом со списком стоп-слов.
+
+def test_extract_table_fields_parses_label_value_pairs():
+    html = (
+        '<table><tbody>'
+        '<tr><td class="table-label">Title:</td><td class="table-value">Something</td></tr>'
+        '<tr><td class="table-label-bg-gray">Location:</td><td class="table-value-bg-gray">Almaty</td></tr>'
+        '</tbody></table>'
+    )
+    fields = _extract_table_fields(html)
+    assert fields["title"] == "Something"
+    assert fields["location"] == "Almaty"
+
+
+def test_extract_table_fields_returns_empty_dict_for_plain_text():
+    """Для не-табличных (плоских текстовых) писем - в т.ч. все существующие
+    синтетические тексты в остальных тестах этого файла - должен возвращаться
+    пустой dict, чтобы вызывающий код падал обратно на старый regex-парсинг."""
+    assert _extract_table_fields("Title: Something Priority: 1 Location: Almaty") == {}
+    assert _extract_table_fields("") == {}
+    assert _extract_table_fields(None) == {}
+
+
+def test_extract_table_fields_ignores_non_label_rows():
+    """Строка <tr> с двумя <td>, где ни одна ячейка не имеет class с 'label' -
+    не форма (например, строка из другой таблицы верстки письма) и должна
+    быть проигнорирована, а не ошибочно принята за пару label/value."""
+    html = '<table><tbody><tr><td>foo</td><td>bar</td></tr></tbody></table>'
+    assert _extract_table_fields(html) == {}
+
+
+def test_extract_table_fields_first_occurrence_wins_on_duplicate_label():
+    html = (
+        '<table><tbody>'
+        '<tr><td class="table-label">Status:</td><td class="table-value">First</td></tr>'
+        '<tr><td class="table-label">Status:</td><td class="table-value">Second</td></tr>'
+        '</tbody></table>'
+    )
+    fields = _extract_table_fields(html)
+    assert fields["status"] == "First"
+
+
+# --- Снапшот-тест на реальном (анонимизированном) письме ServiceNow ---
+# Гарантирует, что переход на table-based парсинг не меняет наблюдаемый вывод
+# для реальной структуры письма ServiceNow (child RITM "Dismount user's
+# workstation" для Exit Request). Значения ниже сняты ДО перехода на
+# table-based парсинг (см. историю задачи) и продублированы здесь как
+# регрессионный снапшот - любое отклонение должно быть осознанным решением,
+# а не побочным эффектом рефакторинга.
+
+def test_parse_ticket_snapshot_real_servicenow_er_child_ritm():
+    html = _load_fixture('servicenow_er_child_ritm.html')
+    subject = (
+        "[ESP][AR] Requested Item RITM0002372026 has been created and assigned "
+        "to the BSS - Local IT - KG"
+    )
+    result = parse_ticket(subject, html, country_tag="[KG]", is_middle_east=False)
+
+    assert result != 'IGNORE'
+    assert result['ticket_id'] == "RITM0002372026"
+    assert result['display_id'] == "RITM0002372026"
+    assert result['header_label'] == "RITM Request"
+    assert result['tag_str'] == "[KG]"
+    assert result['title'].startswith("ER (28 Aug 2026) (Aisha Testova) Dismount user's workstation")
+    assert result['description'] == "Please check Catalog Item user options"
+    assert result['location'] == (
+        "Asia - Central and West/Kyrgyzstan/Gorod Bishkek/Bishkek/Kalyk Akiev, 95"
+    )
+    assert result['location_short'] == "Bishkek"
+    assert result['mention_key'] == "bishkek"
+    assert result['is_critical'] is False
+    assert result['is_sla_alert'] is False
+
+
+def test_extract_ticket_fields_snapshot_real_servicenow_html():
+    """То же самое письмо, но проверяем непосредственно _extract_ticket_fields
+    (title/description/priority/location) без остальной логики parse_ticket -
+    чтобы регрессия в этой конкретной функции была видна сразу, а не только
+    через сквозной результат parse_ticket."""
+    html = _load_fixture('servicenow_er_child_ritm.html')
+    clean_body = cleanup_html(html)
+    title, desc, priority, location = _extract_ticket_fields(clean_body, raw_body=html)
+
+    assert title.startswith("ER (28 Aug 2026) (Aisha Testova) Dismount user's workstation")
+    assert desc == "Please check Catalog Item user options"
+    assert priority == ""
+    assert location == "Asia - Central and West/Kyrgyzstan/Gorod Bishkek/Bishkek/Kalyk Akiev, 95"
+
+
+def test_extract_ticket_fields_table_source_matches_regex_fallback_on_same_body():
+    """Инвариант: для письма с табличной структурой значение, извлечённое
+    новым table-based источником, должно совпадать со значением, которое дал
+    бы старый regex-парсинг по тому же очищенному тексту (для полей, где
+    оба подхода в принципе применимы) - переход на таблицу не должен менять
+    СЕМАНТИКУ уже работающих полей, только надёжность границы."""
+    html = _load_fixture('servicenow_er_child_ritm.html')
+    clean_body = cleanup_html(html)
+
+    with_table = _extract_ticket_fields(clean_body, raw_body=html)
+    without_table = _extract_ticket_fields(clean_body, raw_body=None)
+
+    # description и location идентичны независимо от источника для этого письма.
+    assert with_table[1] == without_table[1]  # description
+    assert with_table[3] == without_table[3]  # location
+
+
+# --- parse_employee_info: table-based извлечение Location через raw_body ---
+# Классификация NPR/ER и извлечение ИМЕНИ остаются на full_text/subject как
+# раньше (не тронуты) - таблица используется только для полей Location/
+# Dismissal Date, где раньше применялся "открытый" regex со списком
+# стоп-слов, тот же класс риска, что и в _extract_ticket_fields.
+
+def test_parse_employee_info_uses_table_location_when_raw_body_provided():
+    subject = "NPR (01 Jul 2026) has been resolved"
+    full_text = (
+        "NPR (01 Jul 2026) has been resolved. "
+        "Employee Name: John Smith "
+        "Title: NPR"
+    )
+    html = (
+        '<table><tbody>'
+        '<tr><td class="table-label">Location:</td>'
+        '<td class="table-value">Asia - Central and West/Kazakhstan/Almaty/Almaty</td></tr>'
+        '</tbody></table>'
+    )
+    info = parse_employee_info(full_text, subject, raw_body=html)
+    assert info is not None
+    assert info['city'] == "Almaty"
+
+
+def test_parse_employee_info_falls_back_to_regex_location_without_raw_body():
+    """Без raw_body (как во всех остальных тестах этого файла) поведение
+    должно быть идентично прежнему - City извлекается из full_text regex-ом."""
+    subject = "NPR (01 Jul 2026) has been resolved"
+    full_text = (
+        "NPR (01 Jul 2026) has been resolved. "
+        "Employee Name: John Smith "
+        "Location: Almaty "
+        "Title: NPR"
+    )
+    info = parse_employee_info(full_text, subject)
+    assert info is not None
+    assert info['city'] == "Almaty"
+
+
+def test_parse_employee_info_table_date_system_preferred_over_plain_text_date():
+    """Реальные письма ServiceNow часто содержат ОБА варианта даты: 'Dismissal
+    Date' в человекочитаемом формате ('28 August 2026' - НЕ распознаётся
+    _parse_report_date в bot/reports.py, т.к. там ожидается сокращённое имя
+    месяца) и 'Dismissal Date System' в ISO-формате ('2026-08-28' -
+    распознаётся корректно). Table-source должен предпочитать System-вариант,
+    т.к. это тот же класс проблемы, ради которого делался весь переход на
+    табличный парсинг - надёжная, однозначная граница поля."""
+    subject = "NPR (01 Jul 2026) has been resolved"
+    full_text = (
+        "NPR (01 Jul 2026) has been resolved. "
+        "Employee Name: John Smith "
+        "Title: NPR"
+    )
+    html = (
+        '<table><tbody>'
+        '<tr><td class="table-label">Location:</td><td class="table-value">Almaty</td></tr>'
+        '<tr><td class="table-label">Dismissal Date:</td><td class="table-value">28 August 2026</td></tr>'
+        '<tr><td class="table-label">Dismissal Date System:</td><td class="table-value">2026-08-28</td></tr>'
+        '</tbody></table>'
+    )
+    info = parse_employee_info(full_text, subject, raw_body=html)
+    assert info is not None
+    assert info['date'] == "2026-08-28"
+

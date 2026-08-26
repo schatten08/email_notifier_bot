@@ -2,8 +2,8 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 from bot.config import TEAMS_REPORT_WEBHOOK_URL, TEAMS_WEBHOOK_URL, TEAMS_MIDDLE_EAST_WEBHOOK_URL
-from bot.storage import load_report, save_report
-from bot.parser import parse_employee_info
+from bot.storage import load_report, save_report, append_dead_letter
+from bot.parser import parse_employee_info_with_reason
 from bot.teams import send_teams_notification
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def _parse_report_date(raw_date):
     return None
 
 
-def extract_report_data(full_text, subject, received_date=None, is_middle_east=False, report_window_start=None):
+def extract_report_data(full_text, subject, received_date=None, is_middle_east=False, report_window_start=None, raw_body=None):
     """
     Вызывается для каждого письма, чтобы наполнить еженедельный отчет.
 
@@ -58,9 +58,29 @@ def extract_report_data(full_text, subject, received_date=None, is_middle_east=F
     monday_start"), чтобы обе проверки использовали ОДНУ и ту же границу. Если
     не передан (например, в одноразовых/тестовых скриптах), вычисляется
     самостоятельно от текущего момента.
+
+    raw_body (опционально) - исходный HTML письма, передаётся дальше в
+    parse_employee_info() для табличного парсинга Location/Dismissal Date
+    (см. bot/parser.py::_extract_table_fields). Если не передан, поведение
+    не меняется - используется старый regex-парсинг по full_text.
     """
-    info = parse_employee_info(full_text, subject)
+    info, reason = parse_employee_info_with_reason(full_text, subject, raw_body=raw_body)
     if not info:
+        if reason:
+            # Письмо ПОХОЖЕ на финальное NPR/ER-событие конкретного сотрудника
+            # (прошло классификацию is_final + NPR/ER), но извлечение имени
+            # или города не удалось - подозрение на дрифт формата письма
+            # ServiceNow. Записываем в dead-letter (только техническая причина
+            # + номер тикета, БЕЗ subject/текста письма - см. docstring
+            # append_dead_letter про GDPR), чтобы дрифт формата обнаруживал
+            # сам бот (через счётчик в health-check, см. bot/main.py), а не
+            # пользователь постфактум по факту пропавшей записи в отчёте.
+            ticket_id_match = re.search(r'(RITM\d+|SCTASK\d+|INC\d+)', full_text)
+            append_dead_letter(reason, ticket_id=ticket_id_match.group(1) if ticket_id_match else None)
+            logger.warning(
+                f"Dead-letter: похоже на финальное NPR/ER-событие, но не удалось "
+                f"извлечь данные (reason={reason}). Возможен дрифт формата письма."
+            )
         return
 
     d = load_report(is_me=is_middle_east)

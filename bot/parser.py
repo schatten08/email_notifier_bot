@@ -14,6 +14,54 @@ def cleanup_html(html_str):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
+def _extract_table_fields(body):
+    """
+    Извлекает пары label->value из HTML-таблиц письма ServiceNow вида
+    <tr><td class="table-label...">Label:</td><td class="table-value...">Value</td></tr>
+    (а также table-bordered-label/inner-table-label - те же паттерны в других
+    блоках шаблона). Возвращает dict {normalized_label: value}, где label -
+    текст ячейки в нижнем регистре, без конечного ':' и лишних пробелов.
+
+    АРХИТЕКТУРНАЯ ПРИЧИНА: письма ServiceNow (подтверждено реальным письмом,
+    см. tests/fixtures/servicenow_er_child_ritm.html) устроены как регулярная
+    табличная структура - каждая строка формы - это ОТДЕЛЬНАЯ пара <td>
+    (label/value), а не плоский текст. Граница значения задана HTML-тегом,
+    а не угадана regex-ом со списком "стоп-слов" (см. _STOP_WORDS), который
+    приходилось вручную дополнять каждый раз, когда рядом с нужным полем
+    появлялось новое соседнее поле, не входившее в список. Использование
+    этой структуры полностью устраняет класс багов "значение поля утекло в
+    соседнее поле/оборвалось раньше времени".
+
+    Если два поля в письме встречаются с одинаковым label (например,
+    "Location" - в блоке Details и "Current Location" - в Request Details,
+    это разные labels, коллизий нет; но если бы совпали) - побеждает ПЕРВОЕ
+    найденное значение (порядок появления в документе), т.к. блок Details
+    обычно идёт раньше и содержит самые релевантные для карточки поля.
+
+    Возвращает {} для не-табличных писем (обычный плоский текст, включая все
+    существующие юнит-тесты, где body - это строка вроде "Title: ... Priority:
+    ..." без HTML) - в этом случае вызывающий код должен использовать старый
+    regex-парсинг по плоскому тексту как fallback.
+    """
+    if not body:
+        return {}
+    soup = BeautifulSoup(str(body), "html.parser")
+    fields = {}
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) != 2:
+            continue
+        label_cell, value_cell = cells
+        label_classes = label_cell.get("class") or []
+        if not any("label" in cls for cls in label_classes):
+            continue
+        label = label_cell.get_text(separator=" ", strip=True).rstrip(":").strip().lower()
+        value = value_cell.get_text(separator=" ", strip=True)
+        if label and label not in fields:
+            fields[label] = value
+    return fields
+
+
 def is_middle_east_message(message, recipients_info, clean_body):
     """Определяет, относится ли письмо к Ближнему Востоку."""
     sender = message.sender.address.lower()
@@ -77,11 +125,34 @@ def _clean_extracted_name(raw_name):
     return None
 
 
-def parse_employee_info(full_text, subject):
+def _parse_employee_info_impl(full_text, subject, raw_body=None):
     """
-    Извлекает данные о сотруднике (NPR/ER) для отчета.
-    Возвращает словарь с данными или None.
+    Основная реализация разбора NPR/ER-данных о сотруднике. Возвращает
+    кортеж (info_dict_or_None, reason_or_None).
+
+    reason - причина, по которой info оказался None, но ТОЛЬКО для случаев,
+    которые являются потенциальным ДРИФТОМ ФОРМАТА письма (риск молчаливой
+    потери реальной записи в отчёте), а не для обычных "письмо вообще не
+    относится к NPR/ER" случаев (это подавляющее большинство писем и не
+    должно шуметь как аномалия):
+      - None       - письмо не финальное (is_final=False), либо не
+                      NPR/ER-запрос вовсе, либо явно исключено бизнес-
+                      правилом (Student/Trainee) - ожидаемое, не аномалия.
+      - 'name_not_found' - письмо ПОХОЖЕ на финальное NPR/ER-событие
+                      (is_final=True, классификация NPR/ER сработала), но ни
+                      один паттерн имени не совпал - подозрение на дрифт
+                      формата (новое поле с именем, которое паттерны не
+                      покрывают).
+      - 'city_not_found'  - то же самое, но имя нашлось, а Location/город
+                      не распознан - подозрение на дрифт формата локации.
+
+    Публичные обёртки ниже (parse_employee_info/parse_employee_info_with_reason)
+    используют этот кортеж по-разному: первая (обратно совместимая, все
+    существующие вызовы) отбрасывает reason, вторая (используется в
+    extract_report_data() для dead-letter, см. bot/reports.py) его возвращает.
     """
+    table_fields = _extract_table_fields(raw_body) if raw_body else {}
+
     is_final = any(kw in subject.lower() for kw in ['resolved', 'closed', 'exit task', 'completed', 'expired'])
     if not is_final:
         if any(kw in full_text.lower() for kw in ['has been resolved', 'has been closed', 'has been provided', 'successfully provided']):
@@ -107,7 +178,7 @@ def parse_employee_info(full_text, subject):
         is_final = False
 
     if not is_final:
-        return None
+        return None, None
     
     is_npr = False
     is_er = False
@@ -139,11 +210,11 @@ def parse_employee_info(full_text, subject):
             is_er = True
 
     if not (is_npr or is_er):
-        return None
+        return None, None
     
     if not is_trans:
         if re.search(r'(Title|Employee title|Employment type):.*(Student|Trainee)', full_text, re.IGNORECASE):
-            return None
+            return None, None
     
     name = None
 
@@ -190,17 +261,33 @@ def parse_employee_info(full_text, subject):
     # ложно на какое-то совпадение по ключевому слову) - в отчёт такая запись
     # не должна попадать под именем None (что выглядит как "None (ER) | ..."
     # в финальном отчёте и не несёт пользы получателю).
+    #
+    # ЭТО ЖЕ - главная точка ДРИФТА ФОРМАТА (см. dead-letter в
+    # bot/reports.py::extract_report_data): письмо УЖЕ прошло проверку
+    # is_final=True и классификацию NPR/ER, то есть это, по всем признакам,
+    # ПОХОЖЕ на реальное финальное NPR/ER-событие конкретного сотрудника -
+    # но ни один паттерн имени не совпал. Это именно тот случай, когда
+    # реальная запись рискует тихо потеряться из отчёта, а не просто письмо,
+    # изначально не относящееся к NPR/ER.
     if not name:
-        return None
+        return None, 'name_not_found'
 
     req_date = "Unknown"
-    m_date = re.search(r'(?:effective from|Dismissal Date|Start Date|First Working Day)[:\s]*(\d{4}-\d{2}-\d{2}|\d+\s*[A-Z][a-z]+\s*\d{4})', full_text, re.IGNORECASE)
-    if m_date:
-        req_date = m_date.group(1).split(' ')[0] if '-' in m_date.group(1) else m_date.group(1)
+    # Table-source приоритетнее: "Dismissal Date System"/"Dismissal Date" в
+    # табличных письмах ServiceNow - надёжное поле с однозначной границей
+    # значения (см. _extract_table_fields), в отличие от regex по plain-тексту
+    # ниже, где граница значения угадывается по следующему известному слову.
+    table_date = table_fields.get("dismissal date system") or table_fields.get("dismissal date") or table_fields.get("start date") or table_fields.get("first working day")
+    if table_date:
+        req_date = table_date.split(' ')[0] if '-' in table_date and re.match(r'^\d{4}-\d{2}-\d{2}', table_date) else table_date
     else:
-        m_title_date = re.search(r'(?:NPR|ER|Transformation)[^()]*\(([^)]+)\)', subject, re.IGNORECASE)
-        if m_title_date:
-            req_date = m_title_date.group(1)
+        m_date = re.search(r'(?:effective from|Dismissal Date|Start Date|First Working Day)[:\s]*(\d{4}-\d{2}-\d{2}|\d+\s*[A-Z][a-z]+\s*\d{4})', full_text, re.IGNORECASE)
+        if m_date:
+            req_date = m_date.group(1).split(' ')[0] if '-' in m_date.group(1) else m_date.group(1)
+        else:
+            m_title_date = re.search(r'(?:NPR|ER|Transformation)[^()]*\(([^)]+)\)', subject, re.IGNORECASE)
+            if m_title_date:
+                req_date = m_title_date.group(1)
 
     city = None
     if 'Relocation Request' in subject or 'Relocation Request' in full_text:
@@ -208,6 +295,20 @@ def parse_employee_info(full_text, subject):
              city = 'Bishkek'
          elif 'uzbekistan' in full_text.lower() or 'tashkent' in full_text.lower():
              city = 'Tashkent'
+
+    # Table-source приоритетнее для Location: границу значения задаёт закрывающий
+    # </td>, а не список стоп-слов ('Description'/'Service'/'Priority'/'Title'),
+    # который приходилось вручную дополнять при появлении нового соседнего поля.
+    table_location = table_fields.get("location") or table_fields.get("current location")
+    if not city and table_location:
+        loc_val = table_location.lower()
+        if 'kyrgyzstan' in loc_val: city = 'Bishkek'
+        elif 'uzbekistan' in loc_val: city = 'Tashkent'
+        if not city:
+            for c in ['Almaty', 'Astana', 'Bishkek', 'Karaganda', 'Tashkent']:
+                if c.lower() in loc_val:
+                    city = c
+                    break
 
     if not city:
         m_loc = re.search(r'Location:\s*(.*?)(?:\n|Description|Service|Priority|Title|$)', full_text, re.IGNORECASE)
@@ -237,8 +338,12 @@ def parse_employee_info(full_text, subject):
                 city = me_c
                 break
 
+    # Вторая точка потенциального ДРИФТА ФОРМАТА: имя уже нашлось (значит,
+    # это точно письмо про конкретного сотрудника, прошедшее классификацию
+    # NPR/ER), но город/локация не распознан - реальная запись рискует
+    # потеряться из отчёта из-за незнакомого варианта написания локации.
     if not city:
-        return None
+        return None, 'city_not_found'
 
     link = "#"
     ticket_id = "ServiceNow"
@@ -261,7 +366,49 @@ def parse_employee_info(full_text, subject):
         'date': req_date,
         'link': link,
         'ticket_id': ticket_id
-    }
+    }, None
+
+
+def parse_employee_info(full_text, subject, raw_body=None):
+    """
+    Извлекает данные о сотруднике (NPR/ER) для отчета.
+    Возвращает словарь с данными или None.
+
+    raw_body (опционально) - исходный HTML письма. Если передан и содержит
+    распознаваемую табличную структуру (см. _extract_table_fields), поля
+    Location/Dismissal Date System берутся оттуда - как более надёжный
+    источник, где граница значения задана HTML-тегом, а не угадана regex-ом.
+    ВАЖНО: сама классификация NPR/ER и все паттерны извлечения ИМЕНИ
+    сотрудника (_AUTHORITATIVE_NAME_PATTERNS/_FALLBACK_NAME_PATTERNS) остаются
+    полностью НЕТРОНУТЫМИ и продолжают работать по full_text/subject как
+    раньше - таблица используется только там, где раньше применялся
+    "открытый" regex со списком стоп-слов (тот же класс риска, что и в
+    _extract_ticket_fields). Если raw_body не передан (все существующие
+    вызовы/тесты) - поведение идентично прежнему (table_fields = {}).
+
+    Тонкая обёртка над _parse_employee_info_impl(), отбрасывающая reason -
+    сохраняет прежний публичный контракт (info_dict_or_None) для всех
+    существующих вызывающих. См. parse_employee_info_with_reason() для
+    варианта, который возвращает и причину отказа (используется в
+    bot/reports.py для dead-letter писем с подозрением на дрифт формата).
+    """
+    info, _reason = _parse_employee_info_impl(full_text, subject, raw_body=raw_body)
+    return info
+
+
+def parse_employee_info_with_reason(full_text, subject, raw_body=None):
+    """
+    То же самое, что parse_employee_info(), но возвращает кортеж
+    (info_dict_or_None, reason_or_None). reason непустой (см. docstring
+    _parse_employee_info_impl) ТОЛЬКО когда письмо прошло классификацию как
+    финальное NPR/ER-событие конкретного сотрудника, но извлечение имени или
+    города не удалось - то есть когда есть реальный риск, что письмо было
+    потенциальной NPR/ER-записью, которая тихо потерялась бы из отчёта.
+    Используется bot/reports.py::extract_report_data() для записи такого
+    письма в dead-letter (data/dead_letters.json), чтобы дрифт формата
+    письма ServiceNow обнаруживал сам бот, а не пользователь постфактум.
+    """
+    return _parse_employee_info_impl(full_text, subject, raw_body=raw_body)
 
 _CIS_CITIES = ["almaty", "astana", "karaganda", "tashkent", "bishkek"]
 _CIS_COUNTRY_TAG_MAP = {"[KZ]": "kazakhstan", "[UZ]": "uzbekistan", "[KG]": "kyrgyzstan"}
@@ -342,16 +489,29 @@ def _detect_sla_alert(subject, clean_body):
     return False
 
 
-def _extract_ticket_fields(clean_body):
-    """Извлекает title/description/priority/location из очищенного текста письма."""
+def _extract_ticket_fields(clean_body, raw_body=None):
+    """
+    Извлекает title/description/priority/location для карточки тикета.
+
+    Приоритет источника поля - табличная структура письма (см.
+    _extract_table_fields), т.к. там граница значения задана HTML-тегом, а
+    не угадана regex-ом. raw_body - исходный (неочищенный от тегов) HTML
+    письма; если он передан и содержит распознаваемую table-label/table-value
+    структуру, поле берётся оттуда. Для писем без такой структуры (обычный
+    плоский текст - в т.ч. все синтетические тексты в существующих юнит-
+    тестах) используется старый regex-парсинг по clean_body как fallback,
+    чтобы поведение для таких писем осталось прежним.
+    """
+    table_fields = _extract_table_fields(raw_body) if raw_body else {}
+
     def _extract(pattern):
         m = re.search(pattern + _STOP_WORDS, clean_body, re.IGNORECASE)
         return m.group(1).strip() if m else ""
 
-    title = _extract(r'Title:\s*(.*?)') or "No title"
-    desc = _extract(r'(?:Description:|Comments:?)\s*(.*?)')
-    priority = _extract(r'Priority:\s*(.*?)')
-    location = _extract(r'Location:\s*(.*?)')
+    title = table_fields.get("title") or _extract(r'Title:\s*(.*?)') or "No title"
+    desc = table_fields.get("description") or table_fields.get("comments") or _extract(r'(?:Description:|Comments:?)\s*(.*?)')
+    priority = table_fields.get("priority") or _extract(r'Priority:\s*(.*?)')
+    location = table_fields.get("location") or _extract(r'Location:\s*(.*?)')
 
     if len(title) > 80:
         title = title[:80] + "..."
@@ -462,7 +622,7 @@ def parse_ticket(subject, body, country_tag="", is_middle_east=False):
         if link_match:
             ticket_url = link_match.group(1).replace('&amp;', '&')
 
-    title, desc, priority, location = _extract_ticket_fields(clean_body)
+    title, desc, priority, location = _extract_ticket_fields(clean_body, raw_body=body)
 
     current_mention = mention_key
     if location:

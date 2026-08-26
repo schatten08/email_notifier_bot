@@ -54,6 +54,7 @@ def send_teams_notification(text, is_critical=False, webhook_url=None):
         return True
     except Exception as e:
         logger.error(f"Ошибка отправки в Teams: {e}")
+        state.failed_sends += 1
         return False
 
 
@@ -278,6 +279,7 @@ def send_ticket_card(ticket, mention_key=None, webhook_url=None):
         return True
     except Exception as e:
         logger.error(f"Ошибка отправки Adaptive Card тикета: {e}")
+        state.failed_sends += 1
         return False
 
 

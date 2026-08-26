@@ -1,0 +1,99 @@
+<!--
+Анонимизированная фикстура реального письма ServiceNow (RITM child-тикет
+"Dismount user's workstation" для Exit Request), выгруженного из .eml
+24 Aug 2026. HTML-структура (классы table-label/table-value, вложенные
+<table>, порядок строк) сохранена БЕЗ ИЗМЕНЕНИЙ - только:
+  - реальные имена сотрудников заменены на вымышленные (Aisha Testova /
+    Bekzat Testov),
+  - трекинговые/safelink-ссылки заменены на "#",
+  - CSS в <head> сокращён (не влияет на парсинг текста).
+
+Источник структуры: EPAM SupportPortal notification (тема письма:
+"[ESP][AR] Requested Item RITM..._has been created and assigned to the
+BSS - Local IT - KG"). Используется в tests/test_parser.py как снапшот-тест
+перед/после перехода на table-based парсинг (см. _extract_ticket_fields,
+parse_employee_info).
+-->
+<html><head>
+<style>
+    .table-label, .table-label-bg-gray { font-weight: bold; }
+    .table-value, .table-value-bg-gray { }
+</style>
+</head>
+<body>
+<table border="0" cellspacing="0" cellpadding="0" width="100%">
+<tbody><tr>
+<td width="650">
+<table border="0" cellspacing="0" cellpadding="0" width="100%">
+<tbody>
+<tr>
+<td class="block-bg-gray text-block">
+<p><strong>Dear colleagues,</strong></p>
+Requested Item (RITM) <a id="snc_uri_ref_link" href="#">RITM0002372026</a> has been created and assigned to your group.
+</td>
+</tr>
+<tr>
+<td class="block">
+<table width="100%" border="0" cellpadding="0" cellspacing="0">
+<tbody>
+<tr><td class="table-title">Details</td></tr>
+<tr><td>
+<table width="100%" border="0" cellpadding="0" cellspacing="0" class="table">
+<tbody>
+<tr><td class="table-label-bg-gray">RITM:</td><td class="table-value-bg-gray">RITM0002372026</td></tr>
+<tr><td class="table-label">Title:</td><td class="table-value">ER (28 Aug 2026) (Aisha Testova) Dismount user's workstation [Child RITM for Exit request]</td></tr>
+<tr><td class="table-label-bg-gray">Description:</td><td class="table-value-bg-gray">Please check Catalog Item user options</td></tr>
+<tr><td class="table-label">Service Recipient:</td><td class="table-value">Bekzat Testov</td></tr>
+<tr><td class="table-label-bg-gray">Location:</td><td class="table-value-bg-gray">Asia - Central and West/Kyrgyzstan/Gorod Bishkek/Bishkek/Kalyk Akiev, 95</td></tr>
+</tbody>
+</table>
+</td></tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td class="block">
+<table width="100%" border="0" cellpadding="0" cellspacing="0">
+<tbody><tr><td class="block-bg-gray block" style="font-family: Arial; width: 100%;">
+<table border="0" cellspacing="0" cellpadding="0" width="100%">
+<tbody>
+<tr><td class="table-title" style="background: #E1E3EB;">Request Details</td></tr>
+<tr><td>
+<table width="100%" border="0" cellpadding="0" cellspacing="0" class="table">
+<tbody>
+<tr><td class="table-label">Employee Name</td><td class="table-value">Aisha Testova</td></tr>
+<tr><td class="table-label">Dismissal Date</td><td class="table-value">28 August 2026</td></tr>
+<tr><td class="table-label">Dismissal Date System</td><td class="table-value">2026-08-28</td></tr>
+<tr><td class="table-label">Employment Type</td><td class="table-value">Trainee</td></tr>
+<tr><td class="table-label">Employee title</td><td class="table-value">Student</td></tr>
+<tr><td class="table-label">Workstation ID current</td><td class="table-value">(empty)</td></tr>
+<tr><td class="table-label">ER link</td><td class="table-value">https://processes.people.epam.com/er/requests/8400100000005565599</td></tr>
+<tr><td class="table-label">ER status</td><td class="table-value">In Progress</td></tr>
+<tr><td class="table-label">Current Location</td><td class="table-value">Asia - Central and West/Kyrgyzstan/Gorod Bishkek/Bishkek/Kalyk Akiev, 95</td></tr>
+<tr><td class="table-label">Employee current RM</td><td class="table-value">Bekzat Testov</td></tr>
+</tbody>
+</table>
+</td></tr>
+</tbody>
+</table>
+</td></tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td class="block">
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+<tbody><tr><td style="padding: 10px 30px; color: #c1c7d0;">This is an automatically generated notification. Please do not reply to this e-mail.</td></tr></tbody>
+</table>
+</td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>
