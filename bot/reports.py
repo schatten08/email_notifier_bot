@@ -176,7 +176,10 @@ def send_weekly_report(is_me=False):
     else:
         report_wh = TEAMS_REPORT_WEBHOOK_URL if TEAMS_REPORT_WEBHOOK_URL else TEAMS_WEBHOOK_URL
         
-    send_teams_notification(report_msg, webhook_url=report_wh)
-    
-    save_report({}, is_me=is_me)
-    logger.info(f"Еженедельный отчет {'ME' if is_me else 'CIS'} отправлен и очищен.")
+    sent = send_teams_notification(report_msg, webhook_url=report_wh)
+
+    if sent:
+        save_report({}, is_me=is_me)
+        logger.info(f"Еженедельный отчет {'ME' if is_me else 'CIS'} отправлен и очищен.")
+    else:
+        logger.error(f"Еженедельный отчет {'ME' if is_me else 'CIS'} не отправлен — данные сохранены, повторная попытка на следующей итерации.")
