@@ -15,8 +15,7 @@ Python-бот для мониторинга shared mailbox в Outlook (Microsoft
 - `data/` — токены, чекпоинты, отчёты, responsibles.json (в git, обновлять через push)
 
 ## Развёртывание
-- **Основной CI/CD**: GitLab CI + self-hosted runner с тегом `oracle` на проде
-- **Fallback**: GitHub Actions (`workflow_dispatch`) через SSH
+- **CI/CD**: GitLab CI + self-hosted runner с тегом `oracle` на проде
 - **Запуск**: `docker-compose up --build -d`
 - **Первый запуск**: требует `data/o365_token.txt` (получается через браузерную авторизацию)
 
