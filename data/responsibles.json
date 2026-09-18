@@ -1,10 +1,8 @@
 {
     "uzbekistan": [
-        {"name": "Bogdan Martemyanov", "email": "bogdan_martemyanov@epam.com"},
         {"name": "Artyom Ashminevich", "email": "artyom_ashminevich@epam.com"}
     ],
     "tashkent": [
-        {"name": "Bogdan Martemyanov", "email": "bogdan_martemyanov@epam.com"},
         {"name": "Artyom Ashminevich", "email": "artyom_ashminevich@epam.com"}
     ],
     "kyrgyzstan": [
